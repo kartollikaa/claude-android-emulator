@@ -2,17 +2,16 @@
 
 ## Goal
 
-An Android emulator or USB device, live and interactive, inside Claude Code — in the terminal
-and in the desktop app's Code tab — plus tools that let Claude see and drive it while it builds
-an app. The desktop app's built-in iOS Simulator panel is the reference experience.
+An Android emulator or USB device, live and interactive, inside the Claude desktop app's Code
+tab, plus tools that let Claude see and drive it while it builds an app. The desktop app's
+built-in iOS Simulator panel is the reference experience.
 
 ## Where it stands
 
-`v0.1.0` is a walking skeleton: `/emulator` opens a pane that lists adb devices and shows one
-screenshot of the selected device (adb `screencap` → PNG file → `Image` on the terminal,
-downscaled JPEG inside an `Svg` on remote surfaces). Validated, type-checked, tested on the
-`terminal` and `desktop` surfaces. See the spike log at the end for what was checked against a
-real emulator.
+`v0.1.0` is a walking skeleton plus prototypes: `/emulator` opens a pane that lists adb devices,
+shows a screenshot, and can go live through the throwaway Node helper in `prototypes/live-helper`.
+The desktop live view is settled: the helper's page in the app's built-in browser pane (smooth,
+interactive); the mod pane tops out at a few frames per second. See the spike log at the end.
 
 ## Findings
 
@@ -91,58 +90,54 @@ helper needed. This is what the skeleton uses.
 ## Target architecture
 
 ```
-emulator ──gRPC streamScreenshot──┐
-USB device ──scrcpy H.264─────────┤
-                                  ▼
-                       android-bridge (native helper, one per session)
-                         • writes each frame to a fresh POSIX shm object
-                         • prints JSON lines: {"frame":"/ab-42","w":540,"h":1200}
-                         • serves control on a Unix socket: /touch /key /text /config
-                                  │ stdout                    ▲ $.http.fetch(socketPath)
-                                  ▼                           │
-                       hooks module (this mod)  ──────────────┘
-                         • $.process.spawn keeps the bridge alive while the pane is open
-                         • $.ui.blit({ key: 'screen', source: { shm } }) per frame
-                         • ui.message from the Client overlay → touch / key
-                         • desktop: small JPEG frames → Svg (few fps) or browser-pane link
-                         • $.tool.register: screenshot, tap, swipe, text, button, launch, open_url
+emulator ──gRPC streamScreenshot / sendTouch / sendKey──┐
+                                                        ▼
+                       android-bridge (Go, one per session, localhost only)
+                         • finds the running emulator and its gRPC port
+                         • serves the live view: a page with a canvas, frames over a
+                           WebSocket, touches and keys back the same way
+                         • a small HTTP API for the mod and Claude's tools
+                                  ▲ $.process.spawn          ▲ $.http.fetch
+                                  │                          │
+                       hooks module (this mod)  ─────────────┘
+                         • /emulator: starts the bridge, opens a status pane, asks Claude to
+                           open the live view in the built-in browser pane ($.prompt.submit)
+                         • $.tool.register: screenshot, tap, swipe, text, key, launch, open_url
+
+built-in browser pane ──http://127.0.0.1:<port>──▶ the live view
 ```
 
-Frames never land in the plugin folder (the session hot-reloads on changes there).
+A mod cannot open the browser pane itself: Claude opens it with its browser tool, which the
+command's prompt asks for. Frames never land in the plugin folder (the session hot-reloads on
+changes there).
 
 ## Roadmap
 
 One PR per item, each reviewed before the next starts.
 
-1. **Spikes** (findings go into the spike log, no product code):
-   1. The desktop Code tab draws a JPEG data URI inside `Svg` (run `/emulator` with a device up).
-   2. Ghostty draws the `Image`; a `Client` laid over it (`position: absolute`) still gets pointer
-      events.
-   3. gRPC `streamScreenshot` from a throwaway client: fps at pane size, row order, token mode.
-   4. Shared-memory frames through `$.ui.blit` at 30–60 fps in Ghostty.
-2. **Bridge v0** (`bridge/`): emulator discovery, gRPC client, frames → shm, JSON-lines protocol,
-   control socket; tested against a fake gRPC server.
-3. **Live terminal pane**: spawn the bridge, blit frames, fps in the status line, stop streaming when
-   the pane closes, fall back to `screencap` when the bridge is missing.
-4. **Input**: `Client` overlay → tap / drag / scroll → `sendTouch`; keys → `sendKey`; a row of
-   Back / Home / Recents / Rotate / Power / Volume buttons.
-5. **Desktop surface**: throttled JPEG-in-`Svg` with a `Client` overlay for taps; evaluate a
-   bridge-served localhost page for the built-in browser pane as the real-time option.
-6. **Claude tools**: an `android` tool mirroring the iOS Simulator's actions; `screenshot` saves a
+1. **Desktop view prototypes**: the spikes in the spike log; settles the browser pane.
+2. **Bridge v0** (`bridge/`, Go): emulator discovery, gRPC client from the pinned proto, the live
+   view page (device only, Back / Home / Recents, keyboard), WebSocket frames and input, a status
+   endpoint; tested against a fake gRPC server. Replaces `prototypes/live-helper`.
+3. **Mod as launcher**: `/emulator` spawns the bridge and stops it with the session, a status pane
+   (devices, bridge state, a link to the live view), the prompt that opens the browser pane. Drops
+   the in-pane live view and the terminal code.
+4. **Claude tools**: an `android` tool mirroring the iOS Simulator's actions; `screenshot` saves a
    PNG Claude reads back (whether a plugin tool result can carry an image block is unverified).
-7. **Emulator management**: list AVDs, boot headless with `-grpc`, stop; an AVD picker in the pane.
-8. **Physical devices**: pinned scrcpy server, H.264 → VideoToolbox → shm, scrcpy control socket.
-9. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and builds), packaged bridge
+5. **Emulator management**: list AVDs, boot with `-qt-hide-window -gpu host -grpc`, stop; an AVD
+   picker in the pane.
+6. **Physical devices**: pinned scrcpy server, H.264 decoded in the bridge, scrcpy control socket.
+7. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and builds), packaged bridge
    binaries, README, public repository.
 
 ## Decisions
 
-- **Desktop only.** The owner dropped the terminal pane: the mod targets the desktop app's Code tab.
-  The terminal live code stays as a prototype until the desktop path settles.
+- **Desktop only.** The owner dropped the terminal: the mod targets the desktop app's Code tab.
+- **The live view lives in the built-in browser pane.** The owner compared both and chose it: the
+  mod pane redraws the whole pane per frame and stays at a few frames per second even with touch
+  working; the browser pane streams to a canvas at the emulator's rate.
 - **Bridge language: Go** — first-class gRPC, one static binary per platform, easy
   cross-compilation; FFmpeg is spawned for device decoding at first.
-- **A dedicated pane, like the iOS Simulator's, on the desktop and in the terminal** — not the
-  browser pane. The desktop frame path is pending the stream test.
 
 ## Open decisions (owner)
 
@@ -159,10 +154,10 @@ One PR per item, each reviewed before the next starts.
 | Skeleton capture pipeline | Works end to end against a headless emulator outside the UI (devices → `screencap` → PNG → JPEG). `screencap` delivers a couple of frames per second at best, PNG or raw: a live view needs the bridge |
 | Desktop frame size | A 720 px JPEG of the phone screen takes about a quarter of the `Svg` source cap: room for a sharper desktop frame |
 | gRPC stream and input (prototype helper) | `streamScreenshot` RGB888 at reduced size works with no token; rows arrive top-down, despite the proto's "bottom up" note. `sendTouch` taps and swipes and `sendKey` `GoHome`/`GoBack`/`AppSwitch` all act on the emulator |
-| Option A: browser-pane live view | Works in the desktop app's built-in browser pane: live frames, drag to swipe, nav keys. Rejected by the owner: it reads as a browser, not a dedicated pane |
+| Option A: browser-pane live view | Works in the desktop app's built-in browser pane: live frames, drag to swipe, nav keys. First rejected by the owner (it reads as a browser), then chosen once the mod pane proved stuck at a few frames per second |
 | Emulator frame rate | `-no-window` selects software rendering (`swangle` / `lavapipe`) and caps the gRPC stream far below the display rate. `-qt-hide-window -gpu host` (how Android Studio launches it) renders on the host GPU and roughly triples the stream rate under continuous swipes, at either stream size. Always launch that way |
 | MJPEG in Chromium | A plain `<img>` plays the helper's MJPEG stream in the app's Chromium; each part must end with the boundary or the frame never shows |
 | Option B: live mod pane | Owner reports 0–2 fps on the desktop: every frame is a state write, a re-render and a new `Svg` image. The emulator and the helper's JPEG encoding are not the bottleneck. Next: the stream test, to find an embedding the desktop plays natively |
 | Desktop touch overlay | Never received a press: a `Client` drew `height="100%"` content inside an auto-height region, so the region collapsed to one row whatever `height` the `Client` was given. The desktop's frame runtime shows why: the region is a flex item that shrinks to the `Client`'s height but never grows to it |
-| Desktop touch surface | A `Client` sized `100%` × `100%` inside an absolute `Box` pinned to the picture (`top`/`left`/`right`/`bottom` 0), drawing content taller than any picture, so its region shrinks to exactly the picture; presses, drags and releases stream to the emulator as touches. Passes the plugin tests; awaiting a check on the desktop app |
+| Desktop touch surface | A `Client` sized `100%` × `100%` inside an absolute `Box` pinned to the picture (`top`/`left`/`right`/`bottom` 0), drawing content taller than any picture, so its region shrinks to exactly the picture; presses, drags and releases stream to the emulator as touches. On the desktop app touch works across the whole picture, but frames still lag: the owner chose the browser pane |
 | Ghostty `Image`, `Client` over `Image` | Not run: the terminal is out of scope |
