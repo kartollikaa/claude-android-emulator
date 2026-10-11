@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/proc"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
@@ -85,14 +85,14 @@ func (b *Bridge) Start(ctx context.Context, avd string) error {
 		return err
 	}
 	logPath := filepath.Join(b.config.LogDir, "emulator-"+avd+".log")
-	cmd, err := bootOnFreePort(found, avd, logPath)
+	pid, err := bootOnFreePort(found, avd, logPath)
 	if err != nil {
 		b.endLaunch(id, Launch{})
 		return err
 	}
-	b.config.Logger.Info("emulator starting", "avd", avd, "pid", cmd.Process.Pid, "log", logPath)
-	go b.awaitExit(id, cmd, avd, logPath)
-	time.AfterFunc(b.config.LaunchTimeout, func() { b.giveUp(id, cmd, avd, logPath) })
+	b.config.Logger.Info("emulator starting", "avd", avd, "pid", pid, "log", logPath)
+	go b.awaitExit(id, pid, avd, logPath)
+	time.AfterFunc(b.config.LaunchTimeout, func() { b.giveUp(id, pid, avd, logPath) })
 
 	return nil
 }
@@ -124,7 +124,7 @@ func (b *Bridge) reserveLaunch(avd string, isRunning bool) (uint64, error) {
 // endLaunch replaces launch id, if it is still starting, with next; it reports whether it did.
 func (b *Bridge) endLaunch(id uint64, next Launch) bool {
 	b.mu.Lock()
-	isCurrent := b.launchID == id && b.launch.Phase == launchStarting
+	isCurrent := b.isStartingLocked(id)
 	if isCurrent {
 		b.launch = next
 	}
@@ -136,10 +136,10 @@ func (b *Bridge) endLaunch(id uint64, next Launch) bool {
 	return isCurrent
 }
 
-func bootOnFreePort(found sdk.SDK, avd, logPath string) (*exec.Cmd, error) {
+func bootOnFreePort(found sdk.SDK, avd, logPath string) (int, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	listener.Close()
@@ -148,19 +148,36 @@ func bootOnFreePort(found sdk.SDK, avd, logPath string) (*exec.Cmd, error) {
 }
 
 // awaitExit reports a launch as failed when its emulator exits before the bridge connects to it.
-func (b *Bridge) awaitExit(id uint64, cmd *exec.Cmd, avd, logPath string) {
-	err := cmd.Wait()
-	if b.endLaunch(id, Launch{AVD: avd, Phase: launchFailed, Error: sdk.LastError(logPath)}) {
-		b.config.Logger.Warn("emulator exited while starting", "avd", avd, "err", err, "log", logPath)
+func (b *Bridge) awaitExit(id uint64, pid int, avd, logPath string) {
+	for b.isStarting(id) {
+		if !proc.Alive(pid) {
+			if b.endLaunch(id, Launch{AVD: avd, Phase: launchFailed, Error: sdk.LastError(logPath)}) {
+				b.config.Logger.Warn("emulator exited while starting", "avd", avd, "log", logPath)
+			}
+			return
+		}
+		time.Sleep(b.config.PollInterval)
 	}
 }
 
+func (b *Bridge) isStarting(id uint64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.isStartingLocked(id)
+}
+
+// isStartingLocked reports whether launch id is the current one and still starting; the caller holds b.mu.
+func (b *Bridge) isStartingLocked(id uint64) bool {
+	return b.launchID == id && b.launch.Phase == launchStarting
+}
+
 // giveUp stops an emulator that never came up, such as one whose gRPC port was taken meanwhile.
-func (b *Bridge) giveUp(id uint64, cmd *exec.Cmd, avd, logPath string) {
+func (b *Bridge) giveUp(id uint64, pid int, avd, logPath string) {
 	reason := fmt.Sprintf("%s did not come up within %s; its log is %s", avd, b.config.LaunchTimeout, logPath)
 	if b.endLaunch(id, Launch{AVD: avd, Phase: launchFailed, Error: reason}) {
 		b.config.Logger.Warn("stopping an emulator that did not come up", "avd", avd, "log", logPath)
-		sdk.Stop(cmd)
+		sdk.Stop(pid)
 	}
 }
 

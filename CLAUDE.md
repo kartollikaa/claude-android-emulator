@@ -1,13 +1,14 @@
 # claude-android-emulator
 
-A Claude Code mod (function-hooks plugin) that draws an Android emulator/device screen in a pane.
+A Claude Code mod (function-hooks plugin) that runs an Android emulator in the desktop app's
+browser pane: `/emulator` launches a Go bridge (`bridge/`) that serves the live view.
 Read `README.md` for usage and `docs/plan.md` for the architecture and roadmap before changing code.
 
 ## Owner requirement: nothing manual
 
 The user never runs a command or touches a terminal: `/emulator` starts the bridge, Claude opens
 the live view, and a Start button in it boots the emulator. User-facing text (the README's Install
-and Use, the page, the pane) describes only that flow; commands belong under the README's Develop.
+and Use, the page) describes only that flow; commands belong under the README's Develop.
 
 ## The mod API
 
@@ -21,22 +22,16 @@ and Use, the page, the pane) describes only that flow; commands belong under the
 
 ## Rules learned the hard way
 
-- Pick surface-specific elements by narrowing `e.surface`, never with `'Image' in elements`:
-  the resolved table answers `in` for elements the surface cannot draw.
-- Terminal pixels go through `Image` (`file`/`shm` sources read by the terminal itself); remote
-  surfaces (desktop, vscode, mobile) have no `Image`, only `Svg` (131072-character source cap).
-- Never write frames or other churn into the plugin folder: the session hot-reloads on every
-  change there. Frames go under `$TMPDIR/claude-android-emulator/`.
-- Render hooks never write state; writes happen in press handlers or other events via `update`.
-- A desktop `Client` region is as tall as what its module draws, capped by the `Client`'s own
-  `height` (cells or `%`), which never stretches it; percentage heights inside the module resolve to
-  nothing. To cover an element, pin an absolute `Box` to it, give the `Client` `100%` × `100%`, and
-  draw taller content. Desktop pointer events carry whole cells, never `fine`.
-- `ClientElements` is the terminal's table minus `Client`/`Raster`/`Image`: no `Svg` in a surface
-  module, on any surface.
-- The validator follows `$` only into functions declared in the hooks module itself, and reads
-  state atoms only when they are declared there: every function taking `$` and every `atom(...)`
-  lives in `hooks/register.tsx`; other files hold pure helpers.
+- When the module unloads, a `$.process.spawn` child dies together with every process descending
+  from it, its own session notwithstanding. Anything that must outlive the session (the emulator)
+  is started through a launcher that exits at once, so it is reparented away.
+- `$.prompt.submit` is refused inside a `command.run` hook (it would wait on the turn the hook
+  holds); submit from a `$.clock.after(0, …)` timer the hook starts.
+- A hook's own time is capped (`HookBudget`); waiting on a plain promise counts, a `$` call does not.
+- Never write frames, builds or other churn into the plugin folder: the session hot-reloads on every
+  change there. They go under `$TMPDIR/claude-android-emulator/`.
+- The validator follows `$` only into functions declared in the hooks module itself: every function
+  taking `$` lives in `hooks/register.ts`; other files hold pure helpers.
 
 ## Checks before any commit
 
@@ -48,13 +43,21 @@ claude plugin validate .
 claude plugin test .
 ```
 
-and `tsc -p .` once the engine has laid the types. Every behaviour change gets a test in `tests/`
-run over both `terminal` and `desktop` surfaces.
+and `tsc -p .` once the engine has laid the types. Every behaviour change gets a test in `tests/`;
+a test that draws runs over both the `terminal` and `desktop` surfaces.
 
 For the bridge:
 
 ```bash
 go -C bridge vet ./...
+```
+
+```bash
+GOOS=linux go -C bridge vet ./...
+```
+
+```bash
+GOOS=windows go -C bridge vet ./...
 ```
 
 ```bash
@@ -68,6 +71,8 @@ gofmt -l bridge
 `bridge/proto/emulator_controller.proto` is a pinned SDK copy: after replacing it, run
 `go -C bridge generate ./...` and commit the regenerated `bridge/internal/emulatorpb/`. The bridge
 serves this machine only: keep the loopback listener, the `Host` / `Origin` guard on every route,
-and the page's refusal to be framed (another site could steer clicks onto the emulator). Emulators
-it boots keep `-grpc-use-token` (their gRPC port listens on every interface), run detached in a
-session of their own, and log to a file under `$TMPDIR/claude-android-emulator/`, never a pipe.
+and the page's refusal to be framed (another site could steer clicks onto the emulator). Its stdout
+carries only the `{"liveView": …}` line the mod reads; logs go to stderr. Emulators it boots keep
+`-grpc-use-token` (their gRPC port listens on every interface), start through the launcher so they
+leave the bridge's process tree, run detached in a session of their own, and log to a file under
+`$TMPDIR/claude-android-emulator/`, never a pipe.

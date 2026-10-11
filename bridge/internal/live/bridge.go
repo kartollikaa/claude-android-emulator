@@ -19,15 +19,15 @@ import (
 
 // Config sets where the bridge looks for emulators and the SDK, and how it streams them.
 type Config struct {
-	DiscoveryDir     string
-	StreamWidth      int
-	RetryInterval    time.Duration
-	BootPollInterval time.Duration
-	LaunchTimeout    time.Duration
-	Logger           *slog.Logger
-	SDKCandidates    []string
-	AVDHome          string
-	LogDir           string
+	DiscoveryDir  string
+	StreamWidth   int
+	RetryInterval time.Duration
+	PollInterval  time.Duration
+	LaunchTimeout time.Duration
+	Logger        *slog.Logger
+	SDKCandidates []string
+	AVDHome       string
+	LogDir        string
 }
 
 // State is what the bridge knows about the emulator, as /status and the live view see it.
@@ -80,8 +80,8 @@ func New(config Config) *Bridge {
 	if config.RetryInterval <= 0 {
 		config.RetryInterval = time.Second
 	}
-	if config.BootPollInterval <= 0 {
-		config.BootPollInterval = 500 * time.Millisecond
+	if config.PollInterval <= 0 {
+		config.PollInterval = 500 * time.Millisecond
 	}
 	if config.LaunchTimeout <= 0 {
 		config.LaunchTimeout = 3 * time.Minute
@@ -175,7 +175,7 @@ func (b *Bridge) watchBoot(ctx context.Context, conn *emulator.Conn) {
 			}
 			return
 		}
-		sleep(ctx, b.config.BootPollInterval)
+		sleep(ctx, b.config.PollInterval)
 	}
 }
 

@@ -2,14 +2,6 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "live-helper",
-      "runtimeExecutable": "node",
-      "runtimeArgs": [
-        "prototypes/live-helper/server.mjs"
-      ],
-      "port": 7357
-    },
-    {
       "name": "android-bridge",
       "runtimeExecutable": "go",
       "runtimeArgs": [

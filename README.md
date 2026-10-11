@@ -1,23 +1,21 @@
 # Android Emulator for Claude Code
 
-A Claude Code mod that shows an Android emulator or a USB device right inside Claude Code: in the
-terminal and in the desktop app's Code tab. It is the Android counterpart of the desktop app's
+A Claude Code mod that runs an Android emulator inside the Claude desktop app's Code tab: live and
+touchable, in the app's built-in browser pane. It is the Android counterpart of the desktop app's
 built-in iOS Simulator panel.
 
-> **Status: in development.** The live, touchable screen runs in the desktop app's built-in browser
-> pane through the bridge, and its Start button boots a virtual device. Next: `/emulator` starts the
-> bridge and opens the live view, so nothing is run by hand; then model-facing tools. See
-> [docs/plan.md](docs/plan.md).
+> **Status: in development.** `/emulator` opens the live view and its Start button boots a virtual
+> device. Next: a toolbar (rotate, screenshot, recording), device settings, tools Claude can drive
+> the emulator with, and a release with prebuilt bridges. See [docs/plan.md](docs/plan.md).
 
 ## Requirements
 
-- macOS (the skeleton uses `sips`; Linux support is on the plan)
-- Android SDK platform-tools (`adb`), found through `ANDROID_HOME`, `ANDROID_SDK_ROOT`,
-  `~/Library/Android/sdk`, Homebrew, or `PATH`
-- A virtual device (AVD) made in Android Studio's Device Manager, which the live view starts, or a
-  device with USB debugging enabled
-- For pixels in the terminal: a terminal with the kitty graphics protocol (Ghostty, kitty).
-  Other terminals show the pane's text and a placeholder for the screen.
+- The Claude desktop app (the live view opens in its browser pane), on macOS
+- The Android SDK with the emulator, found through `ANDROID_HOME`, `ANDROID_SDK_ROOT` or the
+  platform's default folder (`~/Library/Android/sdk` on macOS)
+- A virtual device (AVD) made in Android Studio's Device Manager
+- Until the first release ships prebuilt bridges: Go, at the version `bridge/go.mod` names, which
+  `/emulator` uses to build the bridge on first use
 
 ## Install
 
@@ -32,8 +30,13 @@ in the desktop app's local sessions.
 
 ## Use
 
-- `/emulator` opens the **Android** pane and takes a screenshot of the first ready device.
-- Press a device's button to switch to it, **Refresh** to re-scan devices and take a new screenshot.
+1. Type `/emulator`. Claude opens the live view in the browser pane.
+2. Press **Start** on a virtual device. The page shows the boot, then the screen.
+3. Click to tap, drag to swipe, click the screen and type to send keys (Esc is Back). Back, Home and
+   Recents sit under the screen; the power button shuts the emulator down after a second press.
+
+The emulator keeps running when the session ends, as Android Studio's does; the next `/emulator`
+shows it again.
 
 ## Develop
 
@@ -56,55 +59,43 @@ claude plugin test ~/Projects/claude-android-emulator
 Once a session has loaded the mod from this folder, the engine writes the API types to
 `.claude-plugin/types/` (git-ignored), and `tsc -p .` type-checks the mod.
 
-### The bridge by hand
+### The bridge
 
-`bridge/` is the Android bridge: a small Go program that lists the SDK's virtual devices, boots one,
-streams its screen to a page on `http://127.0.0.1:7357`, and sends clicks, drags and keys back.
-Until the mod starts it, run it by hand to work on it (needs Go):
+`bridge/` is the Android bridge: a Go program that lists the SDK's virtual devices, boots one,
+streams its screen to the live view page on `127.0.0.1`, and sends clicks, drags and keys back.
+
+`/emulator` runs `bin/android-bridge-<os>-<arch>` (`.exe` on Windows) when the plugin has one for
+the platform. Releases ship those binaries, cross-compiled by CI and kept out of `main`'s history.
+In a checkout without them, `/emulator` builds `bridge/` with Go into
+`$TMPDIR/claude-android-emulator/android-bridge-dev`. The mod starts it with `-port 0`, and the
+bridge answers with one line on stdout, `{"liveView":"http://127.0.0.1:<port>"}`; its logs go to
+stderr. It stops with the session and exits by itself if the process that started it is gone.
+
+To work on the bridge alone, run it by hand and open `http://127.0.0.1:7357` in the browser pane:
 
 ```bash
 go -C bridge run ./cmd/android-bridge
 ```
 
-Then ask Claude to open `http://127.0.0.1:7357` in the browser pane. With no emulator running, the
-page lists the AVDs; **Start** boots one detached, with gRPC behind a token and the host GPU
-(`-qt-hide-window -gpu host -grpc <free port> -grpc-use-token`), shows its progress, then the
-screen. Its output goes to `$TMPDIR/claude-android-emulator/emulator-<avd>.log`; one that never
-comes up is stopped and reported. An emulator that is already running with gRPC is picked up as it
-is, and the bridge reconnects when one restarts.
+**Start** boots the emulator with gRPC behind a token and the host GPU
+(`-qt-hide-window -gpu host -grpc <free port> -grpc-use-token`). A short-lived launcher, a second
+run of the bridge's own binary, starts it and exits, so the emulator is not in the bridge's process
+tree: Claude Code kills a mod's child together with everything descending from it. The emulator
+logs to `$TMPDIR/claude-android-emulator/emulator-<avd>.log`; one that never comes up is stopped
+and reported. An emulator already running with gRPC is picked up as it is, and the bridge
+reconnects when one restarts.
 
-Click to tap, drag to swipe, click the screen and type to send keys (Esc is Back), and use the
-Back / Home / Recents buttons; the power button shuts the emulator down after a second press. `-port`, `-stream-width`, `-sdk` (the Android SDK folder; otherwise
-`ANDROID_HOME`, `ANDROID_SDK_ROOT`, then the platform's default), `-discovery-dir` (where emulators
-write `pid_<pid>.ini`) and `-v` (debug logs) are the bridge's flags.
+The bridge's flags:
+
+- `-port`: the live view's port (0 picks a free one).
+- `-stream-width`: the width of the streamed frames.
+- `-sdk`: the Android SDK folder; otherwise `ANDROID_HOME`, `ANDROID_SDK_ROOT`, then the platform's
+  default.
+- `-discovery-dir`: where emulators write `pid_<pid>.ini`.
+- `-v`: debug logs.
 
 The page serves only this machine: the bridge listens on 127.0.0.1 and refuses requests whose
 `Host` or `Origin` is not its own, so no other web page can read the screen or drive the emulator.
-
-### Prototypes: live desktop views
-
-`prototypes/live-helper` is the throwaway Node helper the live views were compared with; the bridge
-replaces its live page, and the mod's in-pane live mode still reads its frames until the mod becomes
-a launcher. It takes the same port as the bridge, so run one at a time:
-
-```bash
-npm --prefix prototypes/live-helper install
-```
-
-```bash
-node prototypes/live-helper/server.mjs
-```
-
-- **Option A, browser pane:** open `http://127.0.0.1:7357` in the desktop app's built-in browser
-  pane. Live canvas: click to tap, drag to swipe, type to send keys, Back / Home / Recents.
-- **Option B, mod pane:** `/emulator`, then **Go live**. On the desktop the pane polls the helper
-  for JPEG frames drawn as an `Svg`, with a `Client` touch surface pinned over the picture that
-  streams presses, drags and releases to the emulator as they happen. In the terminal it draws the
-  helper's raw frame files as an `Image` swapped with `$.ui.blit`, under a `Client` overlay that
-  sends each drag as one gesture.
-- **Stream test (desktop):** **Test stream** draws the helper's MJPEG stream through each embedding
-  the desktop might load natively (`Svg` image, interactive `Svg`, `Markdown` image); the helper
-  logs which ones the desktop requests (`mjpeg stream opened: v=...`).
 
 ## Layout
 
@@ -112,13 +103,9 @@ node prototypes/live-helper/server.mjs
 | --- | --- |
 | `.claude-plugin/plugin.json` | The mod's manifest |
 | `.claude-plugin/marketplace.json` | Makes this repository a one-plugin marketplace |
-| `hooks/register.tsx` | The hooks module: the `/emulator` command, the pane, live mode |
-| `hooks/touch-surface.tsx` | Desktop `Client` surface module: streams pointer presses, drags and releases |
-| `hooks/touch-overlay.tsx` | Terminal `Client` surface module: turns pointer drags into gestures |
-| `hooks/adb.ts`, `hooks/live.ts` | Pure helpers: adb discovery, parsing, sizing, live frames |
-| `bridge/` | The Go bridge: emulator discovery, gRPC client, the live view page and its socket |
+| `hooks/register.ts` | The hooks module: `/emulator` finds or builds the bridge, runs it and asks Claude to open the live view |
+| `hooks/bridge.ts` | Pure helpers: the platform's binary, the bridge's announcement, the prompt |
+| `bridge/` | The Go bridge: SDK and AVDs, the emulator launcher, discovery, gRPC client, the live view page and its socket |
 | `bridge/proto/` | Pinned copy of the Android SDK's `emulator_controller.proto`; `go -C bridge generate ./...` regenerates `bridge/internal/emulatorpb/` |
-| `prototypes/live-helper/` | Throwaway Node helper for the desktop view prototypes |
-| `types/index.d.ts` | The `$.state` contract |
 | `tests/` | `claude plugin test` suites |
-| `docs/plan.md` | Findings, target architecture, roadmap, spike log |
+| `docs/plan.md` | Findings, target architecture, roadmap, decisions, spike log |
