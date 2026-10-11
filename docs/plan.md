@@ -10,8 +10,9 @@ built-in iOS Simulator panel is the reference experience.
 
 `v0.1.0` is a walking skeleton plus prototypes: `/emulator` opens a pane that lists adb devices,
 shows a screenshot, and can go live through the throwaway Node helper in `prototypes/live-helper`.
-The desktop live view is settled: the helper's page in the app's built-in browser pane (smooth,
-interactive); the mod pane tops out at a few frames per second. See the spike log at the end.
+The desktop live view is settled on the app's built-in browser pane (smooth, interactive); the mod
+pane tops out at a few frames per second. The Go bridge in `bridge/` serves that live view; for now
+it is run by hand. See the spike log at the end.
 
 ## Findings
 
@@ -118,17 +119,23 @@ One PR per item, each reviewed before the next starts.
 1. **Desktop view prototypes**: the spikes in the spike log; settles the browser pane.
 2. **Bridge v0** (`bridge/`, Go): emulator discovery, gRPC client from the pinned proto, the live
    view page (device only, Back / Home / Recents, keyboard), WebSocket frames and input, a status
-   endpoint; tested against a fake gRPC server. Replaces `prototypes/live-helper`.
-3. **Mod as launcher**: `/emulator` spawns the bridge and stops it with the session, a status pane
-   (devices, bridge state, a link to the live view), the prompt that opens the browser pane. Drops
-   the in-pane live view and the terminal code.
-4. **Claude tools**: an `android` tool mirroring the iOS Simulator's actions; `screenshot` saves a
-   PNG Claude reads back (whether a plugin tool result can carry an image block is unverified).
-5. **Emulator management**: list AVDs, boot with `-qt-hide-window -gpu host -grpc`, stop; an AVD
-   picker in the pane.
-6. **Physical devices**: pinned scrcpy server, H.264 decoded in the bridge, scrcpy control socket.
-7. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and builds), packaged bridge
-   binaries, README, public repository.
+   endpoint, a guard against other sites (loopback only, own `Host` and `Origin`, no framing);
+   tested against a fake gRPC server.
+3. **Start the emulator from the live view**: the bridge finds the SDK and lists the AVDs; the page
+   shows them with a Start button, boots one with `-qt-hide-window -gpu host -grpc <free port>`,
+   shows boot progress, then the live screen.
+4. **Mod as launcher**: `/emulator` starts the bridge (a prebuilt binary for the user's platform)
+   and stops it with the session, a status pane, and the prompt that has Claude open the live view
+   in the browser pane. Drops the in-pane live view, the terminal code and `prototypes/live-helper`.
+5. **Live view toolbar**: rotate, screenshot, screen recording, power, App info, shut down.
+6. **Device settings**: dark theme, font size, display size, language, reset.
+7. **Claude tools**: an `android` tool mirroring the iOS Simulator's actions (screenshot, tap,
+   swipe, text, key, launch, open_url, logs) over the bridge's HTTP API; whether a plugin tool
+   result can carry an image block is unverified.
+8. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and cross-compiled binaries),
+   README, public repository.
+
+Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrcpy control socket).
 
 ## Decisions
 
@@ -138,12 +145,17 @@ One PR per item, each reviewed before the next starts.
   working; the browser pane streams to a canvas at the emulator's rate.
 - **Bridge language: Go** — first-class gRPC, one static binary per platform, easy
   cross-compilation; FFmpeg is spawned for device decoding at first.
+- **Nothing manual.** The owner: the emulator starts from one button in the live view and the user
+  never runs a command. `/emulator` starts the bridge, Claude opens the live view, the page boots
+  the emulator. User-facing docs describe only that flow.
+- **Bridge distribution: prebuilt binaries inside the plugin.** CI cross-compiles
+  `cmd/android-bridge` with `CGO_ENABLED=0` for macOS, Linux and Windows on arm64 and amd64; the
+  mod runs the one for the user's platform, so users never need Go. The binaries stay out of
+  `main`'s history (the release slice picks the branch or tag the marketplace entry points to);
+  `go run` is for development only.
 
 ## Open decisions (owner)
 
-- **Bridge distribution.** Recommended for the first public release: CI-built binaries shipped
-  inside the plugin (a `/plugin install` copies the repository, so it works with no extra step);
-  revisit with release downloads or a Homebrew tap if the size hurts.
 - **When to make the repository public.**
 
 ## Spike log
@@ -161,3 +173,4 @@ One PR per item, each reviewed before the next starts.
 | Desktop touch overlay | Never received a press: a `Client` drew `height="100%"` content inside an auto-height region, so the region collapsed to one row whatever `height` the `Client` was given. The desktop's frame runtime shows why: the region is a flex item that shrinks to the `Client`'s height but never grows to it |
 | Desktop touch surface | A `Client` sized `100%` × `100%` inside an absolute `Box` pinned to the picture (`top`/`left`/`right`/`bottom` 0), drawing content taller than any picture, so its region shrinks to exactly the picture; presses, drags and releases stream to the emulator as touches. On the desktop app touch works across the whole picture, but frames still lag: the owner chose the browser pane |
 | Ghostty `Image`, `Client` over `Image` | Not run: the terminal is out of scope |
+| Display off | `Power` on API 37 streams full-size black frames; the empty 0×0 image the proto promises for an inactive display was not seen. The bridge keeps the last stream size and the page blacks out the screen if one arrives |

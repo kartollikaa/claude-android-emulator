@@ -3,6 +3,12 @@
 A Claude Code mod (function-hooks plugin) that draws an Android emulator/device screen in a pane.
 Read `README.md` for usage and `docs/plan.md` for the architecture and roadmap before changing code.
 
+## Owner requirement: nothing manual
+
+The user never runs a command or touches a terminal: `/emulator` starts the bridge, Claude opens
+the live view, and a Start button in it boots the emulator. User-facing text (the README's Install
+and Use, the page, the pane) describes only that flow; commands belong under the README's Develop.
+
 ## The mod API
 
 - The API is early access and moves between Claude Code releases. The authority is the
@@ -44,3 +50,22 @@ claude plugin test .
 
 and `tsc -p .` once the engine has laid the types. Every behaviour change gets a test in `tests/`
 run over both `terminal` and `desktop` surfaces.
+
+For the bridge:
+
+```bash
+go -C bridge vet ./...
+```
+
+```bash
+go -C bridge test -race ./...
+```
+
+```bash
+gofmt -l bridge
+```
+
+`bridge/proto/emulator_controller.proto` is a pinned SDK copy: after replacing it, run
+`go -C bridge generate ./...` and commit the regenerated `bridge/internal/emulatorpb/`. The bridge
+serves this machine only: keep the loopback listener, the `Host` / `Origin` guard on every route,
+and the page's refusal to be framed (another site could steer clicks onto the emulator).
