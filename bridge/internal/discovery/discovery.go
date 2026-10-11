@@ -10,20 +10,66 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
-	"strings"
+
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/ini"
 )
 
-// Emulator is one running emulator that serves gRPC.
+// Emulator is one running emulator that serves gRPC; AVD is the name it was started with.
 type Emulator struct {
 	Serial   string
+	AVD      string
 	GRPCPort int
 	Token    string
 }
 
-var pidFile = regexp.MustCompile(`^pid_\d+\.ini$`)
+var pidFile = regexp.MustCompile(`^pid_(\d+)\.ini$`)
+
+type running struct {
+	pid    int
+	values map[string]string
+}
 
 // Find lists the emulators in dir that expose a gRPC port, in file-name order; a missing dir means none run.
 func Find(dir string) ([]Emulator, error) {
+	all, err := readAll(dir)
+	if err != nil {
+		return nil, err
+	}
+	var found []Emulator
+	for _, file := range all {
+		values := file.values
+		port, err := strconv.Atoi(values["grpc.port"])
+		if err != nil || port <= 0 {
+			continue
+		}
+		emulator := Emulator{AVD: values["avd.id"], GRPCPort: port, Token: values["grpc.token"]}
+		if serial := values["port.serial"]; serial != "" {
+			emulator.Serial = "emulator-" + serial
+		}
+		found = append(found, emulator)
+	}
+
+	return found, nil
+}
+
+// RunningAVDs names the AVDs of every emulator in dir whose process is alive, gRPC or not.
+func RunningAVDs(dir string) (map[string]bool, error) {
+	all, err := readAll(dir)
+	if err != nil {
+		return nil, err
+	}
+	avds := map[string]bool{}
+	for _, file := range all {
+		// A killed emulator leaves its file behind.
+		if avd := file.values["avd.id"]; avd != "" && isAlive(file.pid) {
+			avds[avd] = true
+		}
+	}
+
+	return avds, nil
+}
+
+func readAll(dir string) ([]running, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -39,38 +85,18 @@ func Find(dir string) ([]Emulator, error) {
 	}
 	sort.Strings(names)
 
-	var found []Emulator
+	var all []running
 	for _, name := range names {
 		// An emulator shutting down removes its file between the listing and the read.
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			continue
 		}
-		values := parseINI(string(data))
-		port, err := strconv.Atoi(values["grpc.port"])
-		if err != nil || port <= 0 {
-			continue
-		}
-		emulator := Emulator{GRPCPort: port, Token: values["grpc.token"]}
-		if serial := values["port.serial"]; serial != "" {
-			emulator.Serial = "emulator-" + serial
-		}
-		found = append(found, emulator)
+		pid, _ := strconv.Atoi(pidFile.FindStringSubmatch(name)[1])
+		all = append(all, running{pid: pid, values: ini.Parse(string(data))})
 	}
 
-	return found, nil
-}
-
-func parseINI(text string) map[string]string {
-	values := map[string]string{}
-	for _, line := range strings.Split(text, "\n") {
-		key, value, ok := strings.Cut(strings.TrimRight(line, "\r"), "=")
-		if ok && key != "" {
-			values[strings.TrimSpace(key)] = strings.TrimSpace(value)
-		}
-	}
-
-	return values
+	return all, nil
 }
 
 // DefaultDir is where the emulator writes its pid_<pid>.ini on this platform.

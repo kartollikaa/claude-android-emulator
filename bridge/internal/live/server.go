@@ -17,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
 //go:embed index.html
@@ -25,6 +26,7 @@ var page []byte
 const (
 	frameHeaderBytes = 12
 	inputTimeout     = 5 * time.Second
+	sdkTimeout       = 10 * time.Second
 	maxInputBytes    = 64 << 10
 )
 
@@ -33,7 +35,7 @@ func Listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 }
 
-// Handler serves the live view (/), its socket (/live), /status and /input.
+// Handler serves the live view (/), its socket (/live), /status, /input, /avds, /emulators/start and /shutdown.
 func (b *Bridge) Handler() http.Handler {
 	routes := http.NewServeMux()
 	routes.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
@@ -50,6 +52,9 @@ func (b *Bridge) Handler() http.Handler {
 	})
 	routes.HandleFunc("POST /input", b.serveInput)
 	routes.HandleFunc("GET /live", b.serveLive)
+	routes.HandleFunc("GET /avds", b.serveAVDs)
+	routes.HandleFunc("POST /emulators/start", b.serveStart)
+	routes.HandleFunc("POST /shutdown", b.serveShutdown)
 
 	return guardLocal(routes)
 }
@@ -95,24 +100,33 @@ func isOwnOrigin(r *http.Request) bool {
 	return err == nil && parsed.Scheme == "http" && parsed.Host == r.Host
 }
 
-func (b *Bridge) serveInput(w http.ResponseWriter, r *http.Request) {
+// readJSON decodes a JSON request body into v, or answers the error and returns false.
+func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
-		http.Error(w, "input must be application/json", http.StatusUnsupportedMediaType)
-		return
+		http.Error(w, "the body must be application/json", http.StatusUnsupportedMediaType)
+		return false
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxInputBytes))
 	if tooLarge := (*http.MaxBytesError)(nil); errors.As(err, &tooLarge) {
-		http.Error(w, "input is too large", http.StatusRequestEntityTooLarge)
-		return
+		http.Error(w, "the body is too large", http.StatusRequestEntityTooLarge)
+		return false
 	}
 	if err != nil {
-		http.Error(w, "cannot read the input: "+err.Error(), http.StatusBadRequest)
-		return
+		http.Error(w, "cannot read the body: "+err.Error(), http.StatusBadRequest)
+		return false
 	}
+	if err := json.Unmarshal(data, v); err != nil {
+		http.Error(w, "the body is not valid JSON: "+err.Error(), http.StatusBadRequest)
+		return false
+	}
+
+	return true
+}
+
+func (b *Bridge) serveInput(w http.ResponseWriter, r *http.Request) {
 	var message Message
-	if err := json.Unmarshal(data, &message); err != nil {
-		http.Error(w, "input is not valid JSON: "+err.Error(), http.StatusBadRequest)
+	if !readJSON(w, r, &message) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), inputTimeout)
@@ -122,6 +136,67 @@ func (b *Bridge) serveInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (b *Bridge) serveAVDs(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), sdkTimeout)
+	defer cancel()
+	avds, err := b.AVDs(ctx)
+	w.Header().Set("content-type", "application/json")
+	if err != nil {
+		w.WriteHeader(sdkErrorStatus(err))
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string][]AVD{"avds": avds})
+}
+
+func (b *Bridge) serveStart(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		AVD string `json:"avd"`
+	}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	if request.AVD == "" {
+		http.Error(w, "name the virtual device to start in avd", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), sdkTimeout)
+	defer cancel()
+	if err := b.Start(ctx, request.AVD); err != nil {
+		http.Error(w, err.Error(), sdkErrorStatus(err))
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (b *Bridge) serveShutdown(w http.ResponseWriter, r *http.Request) {
+	var request struct{}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), inputTimeout)
+	defer cancel()
+	if err := b.Shutdown(ctx); err != nil {
+		http.Error(w, err.Error(), inputErrorStatus(err))
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func sdkErrorStatus(err error) int {
+	var noSDK *sdk.NotFoundError
+	switch {
+	case errors.As(err, &noSDK):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, ErrUnknownAVD):
+		return http.StatusNotFound
+	case errors.Is(err, ErrBusy):
+		return http.StatusConflict
+	}
+
+	return http.StatusInternalServerError
 }
 
 func inputErrorStatus(err error) int {

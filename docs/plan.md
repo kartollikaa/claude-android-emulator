@@ -11,8 +11,9 @@ built-in iOS Simulator panel is the reference experience.
 `v0.1.0` is a walking skeleton plus prototypes: `/emulator` opens a pane that lists adb devices,
 shows a screenshot, and can go live through the throwaway Node helper in `prototypes/live-helper`.
 The desktop live view is settled on the app's built-in browser pane (smooth, interactive); the mod
-pane tops out at a few frames per second. The Go bridge in `bridge/` serves that live view; for now
-it is run by hand. See the spike log at the end.
+pane tops out at a few frames per second. The Go bridge in `bridge/` serves that live view, lists
+the SDK's virtual devices and boots one from a Start button; for now the bridge itself is run by
+hand. See the spike log at the end.
 
 ## Findings
 
@@ -148,6 +149,12 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
 - **Nothing manual.** The owner: the emulator starts from one button in the live view and the user
   never runs a command. `/emulator` starts the bridge, Claude opens the live view, the page boots
   the emulator. User-facing docs describe only that flow.
+- **Emulators the bridge boots ask for a gRPC token** (`-grpc-use-token`): the emulator's gRPC
+  port listens on every interface, not only loopback; the token lands in the discovery file, where
+  the bridge reads it.
+- **The bridge reads the panel size from the hardware config** (`getStatus`, `hw.lcd.width` and
+  `hw.lcd.height`), not a screenshot: it is the portrait panel whatever the rotation, it is known
+  before the display is up, so the page can show the boot, and it costs no PNG.
 - **Bridge distribution: prebuilt binaries inside the plugin.** CI cross-compiles
   `cmd/android-bridge` with `CGO_ENABLED=0` for macOS, Linux and Windows on arm64 and amd64; the
   mod runs the one for the user's platform, so users never need Go. The binaries stay out of
@@ -173,4 +180,5 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
 | Desktop touch overlay | Never received a press: a `Client` drew `height="100%"` content inside an auto-height region, so the region collapsed to one row whatever `height` the `Client` was given. The desktop's frame runtime shows why: the region is a flex item that shrinks to the `Client`'s height but never grows to it |
 | Desktop touch surface | A `Client` sized `100%` × `100%` inside an absolute `Box` pinned to the picture (`top`/`left`/`right`/`bottom` 0), drawing content taller than any picture, so its region shrinks to exactly the picture; presses, drags and releases stream to the emulator as touches. On the desktop app touch works across the whole picture, but frames still lag: the owner chose the browser pane |
 | Ghostty `Image`, `Client` over `Image` | Not run: the terminal is out of scope |
+| Start from the live view | `emulator -avd Pixel_7 -qt-hide-window -gpu host -grpc <free port> -grpc-use-token`, detached in its own session: the discovery file carries `avd.id` and `grpc.token`, the bridge connects within seconds, and `getStatus().booted` turns true about 15 s after Start (snapshot boot). A SIGTERM to the bridge alone leaves the emulator running; killing the bridge's whole process tree takes the emulator with it, which matters for how the mod stops the bridge. A killed emulator leaves its `pid_<pid>.ini` behind, so "running" also checks that the pid is alive. With the panel size from `getStatus`, the bridge connects about a second after Start and the page shows "Booting" for the rest. `setVmState(SHUTDOWN)` powers it off and removes its file |
 | Display off | `Power` on API 37 streams full-size black frames; the empty 0×0 image the proto promises for an inactive display was not seen. The bridge keeps the last stream size and the page blacks out the screen if one arrives |

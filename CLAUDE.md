@@ -68,4 +68,6 @@ gofmt -l bridge
 `bridge/proto/emulator_controller.proto` is a pinned SDK copy: after replacing it, run
 `go -C bridge generate ./...` and commit the regenerated `bridge/internal/emulatorpb/`. The bridge
 serves this machine only: keep the loopback listener, the `Host` / `Origin` guard on every route,
-and the page's refusal to be framed (another site could steer clicks onto the emulator).
+and the page's refusal to be framed (another site could steer clicks onto the emulator). Emulators
+it boots keep `-grpc-use-token` (their gRPC port listens on every interface), run detached in a
+session of their own, and log to a file under `$TMPDIR/claude-android-emulator/`, never a pipe.

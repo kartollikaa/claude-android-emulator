@@ -5,15 +5,17 @@ terminal and in the desktop app's Code tab. It is the Android counterpart of the
 built-in iOS Simulator panel.
 
 > **Status: in development.** The live, touchable screen runs in the desktop app's built-in browser
-> pane through the bridge. Next: `/emulator` starts everything and a Start button boots an emulator,
-> so nothing is run by hand; then model-facing tools. See [docs/plan.md](docs/plan.md).
+> pane through the bridge, and its Start button boots a virtual device. Next: `/emulator` starts the
+> bridge and opens the live view, so nothing is run by hand; then model-facing tools. See
+> [docs/plan.md](docs/plan.md).
 
 ## Requirements
 
 - macOS (the skeleton uses `sips`; Linux support is on the plan)
 - Android SDK platform-tools (`adb`), found through `ANDROID_HOME`, `ANDROID_SDK_ROOT`,
   `~/Library/Android/sdk`, Homebrew, or `PATH`
-- A running emulator (`emulator -avd <name>`) or a device with USB debugging enabled
+- A virtual device (AVD) made in Android Studio's Device Manager, which the live view starts, or a
+  device with USB debugging enabled
 - For pixels in the terminal: a terminal with the kitty graphics protocol (Ghostty, kitty).
   Other terminals show the pane's text and a placeholder for the screen.
 
@@ -56,25 +58,25 @@ Once a session has loaded the mod from this folder, the engine writes the API ty
 
 ### The bridge by hand
 
-`bridge/` is the Android bridge: a small Go program that finds the running emulator, streams its
-screen to a page on `http://127.0.0.1:7357`, and sends clicks, drags and keys back. Until the mod
-starts it, run it by hand to work on it. Start the emulator with gRPC on and the host GPU (`-no-window` falls back to software rendering,
-which caps the frame rate):
-
-```bash
-emulator -avd Pixel_7 -qt-hide-window -gpu host -grpc 8554
-```
-
-Run the bridge (needs Go; it waits for an emulator and reconnects when one restarts):
+`bridge/` is the Android bridge: a small Go program that lists the SDK's virtual devices, boots one,
+streams its screen to a page on `http://127.0.0.1:7357`, and sends clicks, drags and keys back.
+Until the mod starts it, run it by hand to work on it (needs Go):
 
 ```bash
 go -C bridge run ./cmd/android-bridge
 ```
 
-Then ask Claude to open `http://127.0.0.1:7357` in the browser pane. Click to tap, drag to swipe,
-click the screen and type to send keys (Esc is Back), and use the Back / Home / Recents buttons.
-`-port`, `-stream-width`, `-discovery-dir` (where emulators write `pid_<pid>.ini`) and `-v` (debug
-logs) are the bridge's flags.
+Then ask Claude to open `http://127.0.0.1:7357` in the browser pane. With no emulator running, the
+page lists the AVDs; **Start** boots one detached, with gRPC behind a token and the host GPU
+(`-qt-hide-window -gpu host -grpc <free port> -grpc-use-token`), shows its progress, then the
+screen. Its output goes to `$TMPDIR/claude-android-emulator/emulator-<avd>.log`; one that never
+comes up is stopped and reported. An emulator that is already running with gRPC is picked up as it
+is, and the bridge reconnects when one restarts.
+
+Click to tap, drag to swipe, click the screen and type to send keys (Esc is Back), and use the
+Back / Home / Recents buttons; the power button shuts the emulator down after a second press. `-port`, `-stream-width`, `-sdk` (the Android SDK folder; otherwise
+`ANDROID_HOME`, `ANDROID_SDK_ROOT`, then the platform's default), `-discovery-dir` (where emulators
+write `pid_<pid>.ini`) and `-v` (debug logs) are the bridge's flags.
 
 The page serves only this machine: the bridge listens on 127.0.0.1 and refuses requests whose
 `Host` or `Origin` is not its own, so no other web page can read the screen or drive the emulator.
