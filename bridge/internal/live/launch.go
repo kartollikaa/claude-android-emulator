@@ -105,8 +105,9 @@ func (b *Bridge) reserveLaunch(avd string, isRunning bool) (uint64, error) {
 		b.mu.Unlock()
 		return 0, fmt.Errorf("%w: an emulator is already running", ErrBusy)
 	case b.launch.Phase == launchStarting:
+		starting := b.launch.AVD
 		b.mu.Unlock()
-		return 0, fmt.Errorf("%w: %s is starting", ErrBusy, b.launch.AVD)
+		return 0, fmt.Errorf("%w: %s is starting", ErrBusy, starting)
 	case isRunning:
 		b.mu.Unlock()
 		return 0, fmt.Errorf("%w: %s is already running", ErrBusy, avd)
