@@ -40,8 +40,12 @@ type Message struct {
 	Text  string  `json:"text,omitempty"`
 }
 
-// ErrNoEmulator is returned for input while no emulator is connected.
-var ErrNoEmulator = errors.New("no emulator is connected")
+var (
+	// ErrNoEmulator is returned for input while no emulator is connected.
+	ErrNoEmulator = errors.New("no emulator is connected")
+	// ErrBadInput is returned for a message the bridge cannot turn into an emulator call.
+	ErrBadInput = errors.New("bad input")
+)
 
 // Bridge holds the connection to the current emulator and fans its frames out to viewers.
 type Bridge struct {
@@ -79,7 +83,7 @@ func (b *Bridge) Run(ctx context.Context) {
 			continue
 		}
 		size := conn.StreamSize(b.config.StreamWidth)
-		b.attach(conn, size)
+		b.attach(conn)
 		b.config.Logger.Info("emulator connected", "serial", conn.Emulator.Serial, "device", conn.Device, "stream", size)
 		err := conn.Stream(ctx, size, b.publish)
 		b.detach()
@@ -109,11 +113,11 @@ func (b *Bridge) connect(ctx context.Context) *emulator.Conn {
 	return nil
 }
 
-func (b *Bridge) attach(conn *emulator.Conn, size emulator.Size) {
+func (b *Bridge) attach(conn *emulator.Conn) {
 	b.mu.Lock()
 	b.conn = conn
 	b.latest = nil
-	b.state = State{Connected: true, Serial: conn.Emulator.Serial, Device: conn.Device, Stream: size}
+	b.state = State{Connected: true, Serial: conn.Emulator.Serial, Device: conn.Device}
 	b.mu.Unlock()
 	b.notifyViewers()
 }
@@ -131,6 +135,7 @@ func (b *Bridge) publish(frame emulator.Frame) {
 	b.mu.Lock()
 	b.latest = &frame
 	b.state.Seq = frame.Seq
+	b.state.Stream = emulator.Size{Width: frame.Width, Height: frame.Height}
 	b.mu.Unlock()
 	b.notifyViewers()
 }
@@ -177,28 +182,43 @@ func (b *Bridge) notifyViewers() {
 
 // Input forwards one message to the emulator.
 func (b *Bridge) Input(ctx context.Context, message Message) error {
+	deliver, err := message.delivery()
+	if err != nil {
+		return err
+	}
 	b.mu.Lock()
 	conn := b.conn
 	b.mu.Unlock()
 	if conn == nil {
 		return ErrNoEmulator
 	}
-	switch message.Type {
+
+	return deliver(ctx, conn)
+}
+
+// delivery checks the message and returns the emulator call it stands for.
+func (m Message) delivery() (func(context.Context, *emulator.Conn) error, error) {
+	switch m.Type {
 	case "touch":
-		switch message.Phase {
-		case "down", "move":
-			return conn.Touch(ctx, message.X, message.Y, true)
-		case "up":
-			return conn.Touch(ctx, message.X, message.Y, false)
+		if m.Phase != "down" && m.Phase != "move" && m.Phase != "up" {
+			return nil, fmt.Errorf("%w: unknown touch phase %q", ErrBadInput, m.Phase)
 		}
-		return fmt.Errorf("unknown touch phase %q", message.Phase)
+		return func(ctx context.Context, conn *emulator.Conn) error {
+			return conn.Touch(ctx, m.X, m.Y, m.Phase != "up")
+		}, nil
 	case "key":
-		return conn.Key(ctx, message.Key)
+		if m.Key == "" {
+			return nil, fmt.Errorf("%w: a key message names no key", ErrBadInput)
+		}
+		return func(ctx context.Context, conn *emulator.Conn) error { return conn.Key(ctx, m.Key) }, nil
 	case "text":
-		return conn.Text(ctx, message.Text)
+		if m.Text == "" {
+			return nil, fmt.Errorf("%w: a text message carries no text", ErrBadInput)
+		}
+		return func(ctx context.Context, conn *emulator.Conn) error { return conn.Text(ctx, m.Text) }, nil
 	}
 
-	return fmt.Errorf("unknown input type %q", message.Type)
+	return nil, fmt.Errorf("%w: unknown input type %q", ErrBadInput, m.Type)
 }
 
 func sleep(ctx context.Context, duration time.Duration) {

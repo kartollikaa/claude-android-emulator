@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -71,7 +72,7 @@ func isOwnHost(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	for _, host := range []string{"127.0.0.1", "localhost", "[::1]"} {
+	for _, host := range []string{"127.0.0.1", "localhost"} {
 		if r.Host == host+":"+port {
 			return true
 		}
@@ -97,22 +98,34 @@ func (b *Bridge) serveInput(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "input must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxInputBytes))
+	if err != nil {
+		http.Error(w, "input is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
 	var message Message
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxInputBytes)).Decode(&message); err != nil {
+	if err := json.Unmarshal(data, &message); err != nil {
 		http.Error(w, "input is not valid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), inputTimeout)
 	defer cancel()
 	if err := b.Input(ctx, message); err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, ErrNoEmulator) {
-			status = http.StatusServiceUnavailable
-		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, err.Error(), inputErrorStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func inputErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, ErrBadInput):
+		return http.StatusBadRequest
+	case errors.Is(err, ErrNoEmulator):
+		return http.StatusServiceUnavailable
+	}
+
+	return http.StatusBadGateway
 }
 
 func (b *Bridge) serveLive(w http.ResponseWriter, r *http.Request) {

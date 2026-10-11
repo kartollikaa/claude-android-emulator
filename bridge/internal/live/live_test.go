@@ -267,6 +267,49 @@ func TestHTTPInputRejectsOtherContentTypes(t *testing.T) {
 	}
 }
 
+var badMessages = []string{
+	`{"type":"key","key":"GoHome"} x`,
+	`{"type":"swipe"}`,
+	`{"type":"touch","phase":"hover","x":0.5,"y":0.5}`,
+	`{"type":"key"}`,
+	`{"type":"text"}`,
+}
+
+func TestHTTPInputRejectsBadMessages(t *testing.T) {
+	h := startBridge(t)
+	ctx := testContext(t)
+	if status := postInput(t, h, "application/json", badMessages[1]); status != http.StatusBadRequest {
+		t.Errorf("a bad message with no emulator answered %d, want 400", status)
+	}
+	fake, _ := h.connected(t, ctx, "")
+
+	for _, message := range badMessages {
+		if status := postInput(t, h, "application/json", message); status != http.StatusBadRequest {
+			t.Errorf("%s answered %d, want 400", message, status)
+		}
+	}
+	if touches, keys := fake.Touches(), fake.Keys(); len(touches)+len(keys) != 0 {
+		t.Fatalf("bad messages reached the emulator: touches %v, keys %v", touches, keys)
+	}
+}
+
+func TestLiveDropsBadMessages(t *testing.T) {
+	h := startBridge(t)
+	ctx := testContext(t)
+	fake, _ := h.connected(t, ctx, "")
+	socket := h.dialLive(t, ctx)
+
+	for _, message := range badMessages {
+		sendJSON(t, ctx, socket, message)
+	}
+	sendJSON(t, ctx, socket, `{"type":"key","key":"GoBack"}`)
+
+	eventually(t, func() bool { return len(fake.Keys()) > 0 }, "the good message reaching the emulator")
+	if touches, keys := fake.Touches(), fake.Keys(); len(touches) != 0 || len(keys) != 1 || keys[0].GetKey() != "GoBack" {
+		t.Fatalf("touches %v, keys %v; want only the GoBack sent after the bad messages", touches, keys)
+	}
+}
+
 func TestStatusConnected(t *testing.T) {
 	h := startBridge(t)
 	ctx := testContext(t)
@@ -284,6 +327,22 @@ func TestStatusConnected(t *testing.T) {
 	}
 	if state != want {
 		t.Fatalf("status = %+v, want %+v", state, want)
+	}
+}
+
+func TestStatusStreamFollowsTheFrames(t *testing.T) {
+	h := startBridge(t)
+	ctx := testContext(t)
+	_, frames := h.connected(t, ctx, "")
+	if state := h.status(t); state.Stream != (emulator.Size{}) {
+		t.Fatalf("stream = %+v before any frame arrived, want none", state.Stream)
+	}
+
+	frames <- fakeemulator.Frame(3, streamWidth, streamHeight-1, 0)
+
+	state := h.waitFor(t, func(state State) bool { return state.Seq == 3 })
+	if want := (emulator.Size{Width: streamWidth, Height: streamHeight - 1}); state.Stream != want {
+		t.Fatalf("stream = %+v, want the %+v the emulator sent rather than the size asked for", state.Stream, want)
 	}
 }
 
@@ -313,10 +372,12 @@ func TestTokenIsSentOnEveryCall(t *testing.T) {
 
 	stranger := fakeemulator.Start(t, deviceWidth, deviceHeight, "s3cret==")
 	tokenless := startBridge(t)
-	os.WriteFile(tokenless.dir+"/pid_9.ini", []byte("grpc.port="+strconv.Itoa(stranger.Port)+"\n"), 0o600)
-	time.Sleep(100 * time.Millisecond)
-	if _, rejected := stranger.Calls(); rejected == 0 || tokenless.status(t).Connected {
-		t.Fatal("the fake accepted calls without the token: the check above proves nothing")
+	if err := os.WriteFile(tokenless.dir+"/pid_9.ini", []byte("grpc.port="+strconv.Itoa(stranger.Port)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool { _, rejected := stranger.Calls(); return rejected > 0 }, "the fake refusing a call without the token")
+	if tokenless.status(t).Connected {
+		t.Fatal("a bridge without the token connected: the check above proves nothing")
 	}
 }
 
@@ -375,6 +436,7 @@ func TestRejectsForeignHost(t *testing.T) {
 	for host, want := range map[string]int{
 		"evil.example:" + port: http.StatusForbidden,
 		"127.0.0.1:1":          http.StatusForbidden,
+		"[::1]:" + port:        http.StatusForbidden,
 		"localhost:" + port:    http.StatusOK,
 		"127.0.0.1:" + port:    http.StatusOK,
 	} {
