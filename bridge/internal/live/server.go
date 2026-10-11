@@ -35,7 +35,7 @@ func Listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 }
 
-// Handler serves the live view (/), its socket (/live), /status, /input, /avds and /emulators/start.
+// Handler serves the live view (/), its socket (/live), /status, /input, /avds, /emulators/start and /shutdown.
 func (b *Bridge) Handler() http.Handler {
 	routes := http.NewServeMux()
 	routes.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
@@ -54,6 +54,7 @@ func (b *Bridge) Handler() http.Handler {
 	routes.HandleFunc("GET /live", b.serveLive)
 	routes.HandleFunc("GET /avds", b.serveAVDs)
 	routes.HandleFunc("POST /emulators/start", b.serveStart)
+	routes.HandleFunc("POST /shutdown", b.serveShutdown)
 
 	return guardLocal(routes)
 }
@@ -165,6 +166,20 @@ func (b *Bridge) serveStart(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := b.Start(ctx, request.AVD); err != nil {
 		http.Error(w, err.Error(), sdkErrorStatus(err))
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (b *Bridge) serveShutdown(w http.ResponseWriter, r *http.Request) {
+	var request struct{}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), inputTimeout)
+	defer cancel()
+	if err := b.Shutdown(ctx); err != nil {
+		http.Error(w, err.Error(), inputErrorStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/ini"
 )
@@ -158,6 +159,13 @@ func (s SDK) Boot(avd string, grpcPort int, logPath string) (*exec.Cmd, error) {
 	}
 
 	return cmd, nil
+}
+
+// Stop asks a booted emulator to shut down, killing it where it cannot be asked.
+func Stop(cmd *exec.Cmd) {
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		cmd.Process.Kill()
+	}
 }
 
 // LastError picks the line of an emulator log that explains a failed boot.

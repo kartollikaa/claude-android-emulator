@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"time"
 
 	"google.golang.org/grpc"
@@ -53,7 +54,7 @@ func (token bearerToken) GetRequestMetadata(context.Context, ...string) (map[str
 // The emulator serves gRPC in plaintext on localhost.
 func (bearerToken) RequireTransportSecurity() bool { return false }
 
-// Dial connects to the emulator and reads its native screen size.
+// Dial connects to the emulator and reads its native portrait panel size.
 func Dial(ctx context.Context, emulator discovery.Emulator, logger *slog.Logger) (*Conn, error) {
 	options := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -70,21 +71,36 @@ func Dial(ctx context.Context, emulator discovery.Emulator, logger *slog.Logger)
 
 	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
-	shot, err := client.GetScreenshot(ctx, &pb.ImageFormat{Format: pb.ImageFormat_PNG})
+	emulatorStatus, err := client.GetStatus(ctx, &emptypb.Empty{})
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("emulator on gRPC port %d: %w", emulator.GRPCPort, err)
 	}
-	device := Size{Width: int(shot.GetFormat().GetWidth()), Height: int(shot.GetFormat().GetHeight())}
+	device := panelSize(emulatorStatus)
 	if device.Width <= 0 || device.Height <= 0 {
 		conn.Close()
-		return nil, fmt.Errorf("emulator on gRPC port %d reported a %dx%d screen", emulator.GRPCPort, device.Width, device.Height)
+		return nil, fmt.Errorf("emulator on gRPC port %d reported no panel size", emulator.GRPCPort)
 	}
 
 	return &Conn{Emulator: emulator, Device: device, conn: conn, client: client, logger: logger}, nil
 }
 
 func (c *Conn) Close() error { return c.conn.Close() }
+
+// panelSize is the hardware config's hw.lcd size: the portrait panel whatever the rotation, known before the display is up.
+func panelSize(emulatorStatus *pb.EmulatorStatus) Size {
+	config := emulatorStatus.GetPlatformConfig()
+	if len(config) == 0 {
+		config = map[string]string{}
+		for _, entry := range emulatorStatus.GetHardwareConfig().GetEntry() {
+			config[entry.GetKey()] = entry.GetValue()
+		}
+	}
+	width, _ := strconv.Atoi(config["hw.lcd.width"])
+	height, _ := strconv.Atoi(config["hw.lcd.height"])
+
+	return Size{Width: width, Height: height}
+}
 
 // StreamSize is the size frames arrive at when streamed at width, keeping the screen's aspect.
 func (c *Conn) StreamSize(width int) Size {
@@ -139,6 +155,13 @@ func (c *Conn) Touch(ctx context.Context, x, y float64, isDown bool) error {
 // Key presses and releases a named key (GoHome, GoBack, AppSwitch, Enter, Backspace, ...).
 func (c *Conn) Key(ctx context.Context, key string) error {
 	_, err := c.client.SendKey(ctx, &pb.KeyboardEvent{EventType: pb.KeyboardEvent_keypress, Key: key})
+
+	return err
+}
+
+// Shutdown asks the emulator to power off gracefully, as closing its window does.
+func (c *Conn) Shutdown(ctx context.Context) error {
+	_, err := c.client.SetVmState(ctx, &pb.VmRunState{State: pb.VmRunState_SHUTDOWN})
 
 	return err
 }

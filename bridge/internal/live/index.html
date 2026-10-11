@@ -82,7 +82,9 @@
   }
   nav button:hover { background: var(--button-hover); }
   nav button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-  nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+  nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  nav .power { margin-left: 16px; }
+  nav .power.confirming { width: auto; padding: 0 12px; background: var(--error); border-color: var(--error); color: var(--bg); font: inherit; font-weight: 600; }
 </style>
 </head>
 <body class="offline">
@@ -110,6 +112,7 @@
     <button data-key="GoBack" aria-label="Back" title="Back"><svg viewBox="0 0 24 24"><path d="M16 5 7 12l9 7z"/></svg></button>
     <button data-key="GoHome" aria-label="Home" title="Home"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></svg></button>
     <button data-key="AppSwitch" aria-label="Recents" title="Recents"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
+    <button class="power" id="shutdown" aria-label="Shut down" title="Shut down"><svg viewBox="0 0 24 24"><path d="M12 4v7M7.5 7.2a7 7 0 1 0 9 0"/></svg></button>
   </nav>
 <script>
   const canvas = document.getElementById('screen')
@@ -120,6 +123,7 @@
   function connect() {
     socket = new WebSocket(`ws://${location.host}/live`)
     socket.binaryType = 'arraybuffer'
+    socket.onopen = loadNames
     socket.onclose = () => {
       show('problem', { title: 'Connecting to the bridge…', detail: '' })
       setTimeout(connect, 1000)
@@ -139,10 +143,12 @@
   let shown = null
   let progressSince = 0
   let names = {}
+  let lastState = null
 
   function el(id) { return document.getElementById(id) }
 
   function render(state) {
+    lastState = state
     if (state.connected && state.booted) return show(null)
     if (state.connected) return show('progress', { title: `Booting ${label(state.avd || state.serial)}` })
     if (state.launch?.phase === 'starting') return show('progress', { title: `Starting ${label(state.launch.avd)}` })
@@ -161,7 +167,10 @@
     if (name === 'picker') {
       el('launch-error').hidden = !options.error
       el('launch-error').textContent = options.error || ''
-      if (entering) loadAVDs()
+      if (entering) {
+        drawnAVDs = ''
+        loadAVDs()
+      }
     }
   }
 
@@ -173,17 +182,34 @@
   }
   setInterval(tick, 1000)
 
+  // Display names for the progress title, in case the page opens on an emulator already starting.
+  async function loadNames() {
+    try {
+      const answer = await (await fetch('/avds')).json()
+      names = Object.fromEntries((answer.avds || []).map(avd => [avd.name, avd.displayName]))
+      if (shown === 'progress' && lastState) render(lastState)
+    } catch {}
+  }
+
+  // An emulator shutting down still counts as running, so the list keeps itself fresh while shown.
+  let drawnAVDs = ''
+  setInterval(() => { if (shown === 'picker') loadAVDs() }, 3000)
+
   async function loadAVDs() {
     const list = el('avds')
     let answer
     try {
       const response = await fetch('/avds')
       answer = await response.json()
+      if (shown !== 'picker') return
       if (!response.ok) return show('problem', { title: 'Android SDK not found', detail: answer.error })
     } catch (error) {
-      return show('problem', { title: 'Cannot list the virtual devices', detail: String(error) })
+      if (shown === 'picker') show('problem', { title: 'Cannot list the virtual devices', detail: String(error) })
+      return
     }
     names = Object.fromEntries(answer.avds.map(avd => [avd.name, avd.displayName]))
+    if (JSON.stringify(answer.avds) === drawnAVDs && list.children.length) return
+    drawnAVDs = JSON.stringify(answer.avds)
     el('avds-empty').hidden = answer.avds.length > 0
     list.replaceChildren(...answer.avds.map(avd => {
       const item = document.createElement('li')
@@ -205,14 +231,39 @@
 
   async function startAVD(name, button) {
     button.disabled = true
-    const response = await fetch('/emulators/start', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ avd: name }),
-    })
-    if (!response.ok) {
-      el('launch-error').hidden = false
-      el('launch-error').textContent = (await response.text()).trim()
-      button.disabled = false
+    let problem = ''
+    try {
+      const response = await fetch('/emulators/start', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ avd: name }),
+      })
+      if (!response.ok) problem = (await response.text()).trim()
+    } catch (error) {
+      problem = `Cannot reach the bridge: ${error}`
     }
+    if (!problem) return
+    el('launch-error').hidden = false
+    el('launch-error').textContent = problem
+    button.disabled = false
+  }
+
+  // Shut down asks once more on the button itself; a second press within a few seconds powers off.
+  const shutdown = el('shutdown')
+  let confirmTimer = 0
+  shutdown.addEventListener('click', async () => {
+    if (!shutdown.classList.contains('confirming')) {
+      shutdown.classList.add('confirming')
+      shutdown.textContent = 'Shut down?'
+      confirmTimer = setTimeout(resetShutdown, 3000)
+      return
+    }
+    resetShutdown()
+    await fetch('/shutdown', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {})
+  })
+  const powerIcon = shutdown.innerHTML
+  function resetShutdown() {
+    clearTimeout(confirmTimer)
+    shutdown.classList.remove('confirming')
+    shutdown.innerHTML = powerIcon
   }
 
   function draw(header, rgb) {

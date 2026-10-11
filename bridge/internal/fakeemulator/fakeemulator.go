@@ -27,12 +27,15 @@ type Fake struct {
 	Token         string
 	// AVD, when set before WriteINI, is the name the discovery file gives as avd.id.
 	AVD string
+	// Rotated makes screenshots landscape, as an emulator turned on its side answers.
+	Rotated bool
 
 	server  *grpc.Server
 	streams chan chan *pb.Image
 
 	mu       sync.Mutex
 	isBooted bool
+	vmStates []pb.VmRunState_RunState
 	touches  []*pb.Touch
 	keys     []*pb.KeyboardEvent
 	calls    int
@@ -167,11 +170,39 @@ func (f *Fake) SetBooted(isBooted bool) {
 func (f *Fake) GetStatus(context.Context, *emptypb.Empty) (*pb.EmulatorStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return &pb.EmulatorStatus{Booted: f.isBooted}, nil
+	return &pb.EmulatorStatus{
+		Booted: f.isBooted,
+		HardwareConfig: &pb.EntryList{Entry: []*pb.Entry{
+			{Key: "hw.lcd.width", Value: fmt.Sprint(f.Width)},
+			{Key: "hw.lcd.height", Value: fmt.Sprint(f.Height)},
+		}},
+	}, nil
 }
 
 func (f *Fake) GetScreenshot(context.Context, *pb.ImageFormat) (*pb.Image, error) {
-	return &pb.Image{Format: &pb.ImageFormat{Format: pb.ImageFormat_PNG, Width: uint32(f.Width), Height: uint32(f.Height)}}, nil
+	width, height := f.Width, f.Height
+	if f.Rotated {
+		width, height = height, width
+	}
+	return &pb.Image{Format: &pb.ImageFormat{Format: pb.ImageFormat_PNG, Width: uint32(width), Height: uint32(height)}}, nil
+}
+
+// VmStates returns the VM states asked for so far.
+func (f *Fake) VmStates() []pb.VmRunState_RunState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]pb.VmRunState_RunState(nil), f.vmStates...)
+}
+
+// SetVmState records the state; SHUTDOWN ends the fake as the real emulator powers off.
+func (f *Fake) SetVmState(_ context.Context, state *pb.VmRunState) (*emptypb.Empty, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vmStates = append(f.vmStates, state.GetState())
+	if state.GetState() == pb.VmRunState_SHUTDOWN {
+		go f.Stop()
+	}
+	return &emptypb.Empty{}, nil
 }
 
 func (f *Fake) StreamScreenshot(_ *pb.ImageFormat, stream grpc.ServerStreamingServer[pb.Image]) error {

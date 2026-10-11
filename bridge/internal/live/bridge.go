@@ -23,6 +23,7 @@ type Config struct {
 	StreamWidth      int
 	RetryInterval    time.Duration
 	BootPollInterval time.Duration
+	LaunchTimeout    time.Duration
 	Logger           *slog.Logger
 	SDKCandidates    []string
 	AVDHome          string
@@ -62,12 +63,13 @@ var (
 type Bridge struct {
 	config Config
 
-	mu      sync.Mutex
-	conn    *emulator.Conn
-	state   State
-	launch  Launch
-	latest  *emulator.Frame
-	viewers map[chan struct{}]struct{}
+	mu       sync.Mutex
+	conn     *emulator.Conn
+	state    State
+	launch   Launch
+	launchID uint64
+	latest   *emulator.Frame
+	viewers  map[chan struct{}]struct{}
 }
 
 // New makes a bridge; Run connects it.
@@ -80,6 +82,9 @@ func New(config Config) *Bridge {
 	}
 	if config.BootPollInterval <= 0 {
 		config.BootPollInterval = 500 * time.Millisecond
+	}
+	if config.LaunchTimeout <= 0 {
+		config.LaunchTimeout = 3 * time.Minute
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
@@ -152,7 +157,6 @@ func (b *Bridge) attach(conn *emulator.Conn) {
 	b.notifyViewers()
 }
 
-// watchBoot polls the emulator until it reports the device booted.
 func (b *Bridge) watchBoot(ctx context.Context, conn *emulator.Conn) {
 	for ctx.Err() == nil {
 		isBooted, err := conn.Booted(ctx)

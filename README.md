@@ -69,11 +69,12 @@ go -C bridge run ./cmd/android-bridge
 Then ask Claude to open `http://127.0.0.1:7357` in the browser pane. With no emulator running, the
 page lists the AVDs; **Start** boots one detached, with gRPC behind a token and the host GPU
 (`-qt-hide-window -gpu host -grpc <free port> -grpc-use-token`), shows its progress, then the
-screen. Its output goes to `$TMPDIR/claude-android-emulator/emulator-<avd>.log`. An emulator that
-is already running with gRPC is picked up as it is, and the bridge reconnects when one restarts.
+screen. Its output goes to `$TMPDIR/claude-android-emulator/emulator-<avd>.log`; one that never
+comes up is stopped and reported. An emulator that is already running with gRPC is picked up as it
+is, and the bridge reconnects when one restarts.
 
 Click to tap, drag to swipe, click the screen and type to send keys (Esc is Back), and use the
-Back / Home / Recents buttons. `-port`, `-stream-width`, `-sdk` (the Android SDK folder; otherwise
+Back / Home / Recents buttons; the power button shuts the emulator down after a second press. `-port`, `-stream-width`, `-sdk` (the Android SDK folder; otherwise
 `ANDROID_HOME`, `ANDROID_SDK_ROOT`, then the platform's default), `-discovery-dir` (where emulators
 write `pid_<pid>.ini`) and `-v` (debug logs) are the bridge's flags.
 

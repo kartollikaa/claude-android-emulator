@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 )
 
@@ -230,6 +231,9 @@ func TestStartRefusesWhatItCannotLaunch(t *testing.T) {
 		if status, body := send(t, h, http.MethodPost, "/emulators/start", step.contentType, step.origin, step.body); status != step.want {
 			t.Errorf("%s answered %d %q, want %d", step.name, status, body, step.want)
 		}
+		if launch := h.status(t).Launch; launch != (Launch{}) {
+			t.Fatalf("%s left launch %+v, want none", step.name, launch)
+		}
 	}
 	if status := start(t, h, "Pixel_7"); status != http.StatusAccepted {
 		t.Fatalf("a valid start answered %d, want 202", status)
@@ -314,6 +318,75 @@ func TestBootProgress(t *testing.T) {
 // ownDiscoveryFile names a discovery file after this test's own pid, which is alive.
 func ownDiscoveryFile(h *harness) string {
 	return filepath.Join(h.dir, "pid_"+strconv.Itoa(os.Getpid())+".ini")
+}
+
+func TestStuckLaunchIsStopped(t *testing.T) {
+	root := fakeSDK(t, stayingUp)
+	logDir := t.TempDir()
+	h := startBridge(t, withSDK(root), func(config *Config) {
+		config.LaunchTimeout = 300 * time.Millisecond
+		config.LogDir = logDir
+	})
+
+	if status := start(t, h, "Pixel_7"); status != http.StatusAccepted {
+		t.Fatalf("start answered %d, want 202", status)
+	}
+
+	eventuallyWithin(t, 2*time.Second, func() bool { return h.status(t).Launch.Phase == "failed" }, "the stuck launch reported as failed")
+	launch := h.status(t).Launch
+	if !strings.Contains(launch.Error, "did not come up") || !strings.Contains(launch.Error, filepath.Join(logDir, "emulator-Pixel_7.log")) {
+		t.Errorf("error = %q, want it to say the emulator did not come up and name its log", launch.Error)
+	}
+	pid := launches(root)[0].pid
+	eventuallyWithin(t, 2*time.Second, func() bool { return syscall.Kill(pid, 0) != nil }, "the stuck emulator being stopped")
+	if status := start(t, h, "Pixel_7"); status != http.StatusAccepted {
+		t.Errorf("a start after the stuck launch answered %d, want 202", status)
+	}
+}
+
+func TestShutdownAsksTheEmulatorToShutDown(t *testing.T) {
+	h := startBridge(t)
+	if status, _ := send(t, h, http.MethodPost, "/shutdown", "application/json", "", `{}`); status != http.StatusServiceUnavailable {
+		t.Errorf("shutdown with no emulator answered %d, want 503", status)
+	}
+	fake, _ := h.connected(t, testContext(t), "")
+
+	for _, step := range []struct {
+		name, contentType, origin string
+		want                      int
+	}{
+		{"not JSON", "text/plain", "", http.StatusUnsupportedMediaType},
+		{"foreign origin", "application/json", "https://evil.example", http.StatusForbidden},
+	} {
+		if status, _ := send(t, h, http.MethodPost, "/shutdown", step.contentType, step.origin, `{}`); status != step.want {
+			t.Errorf("%s answered %d, want %d", step.name, status, step.want)
+		}
+	}
+	if states := fake.VmStates(); len(states) != 0 {
+		t.Fatalf("refused requests reached the emulator: %v", states)
+	}
+	if status, body := send(t, h, http.MethodPost, "/shutdown", "application/json", "", `{}`); status != http.StatusAccepted {
+		t.Fatalf("shutdown answered %d %q, want 202", status, body)
+	}
+
+	if states := fake.VmStates(); !slices.Equal(states, []pb.VmRunState_RunState{pb.VmRunState_SHUTDOWN}) {
+		t.Fatalf("VM states = %v, want one SHUTDOWN", states)
+	}
+	h.waitFor(t, func(state State) bool { return !state.Connected })
+}
+
+func TestDeviceSizeIgnoresTheRotationAtConnect(t *testing.T) {
+	h := startBridge(t)
+	fake := fakeemulator.Start(t, deviceWidth, deviceHeight, "")
+	fake.Rotated = true
+	fake.WriteINI(t, h.dir, 1)
+	fake.NextStream(t, testContext(t))
+
+	state := h.waitFor(t, func(state State) bool { return state.Connected })
+
+	if state.Device != deviceSize() {
+		t.Fatalf("device = %+v with the emulator turned landscape, want the portrait panel %+v", state.Device, deviceSize())
+	}
 }
 
 func writeFile(t *testing.T, path, text string) {
