@@ -8,8 +8,12 @@ import (
 	"syscall"
 )
 
-// Alive reports whether the process with pid runs.
+// Alive reports whether the process with pid runs; one that exited but was not reaped yet does not.
 func Alive(pid int) bool {
 	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+
+	return !isZombie(pid)
 }

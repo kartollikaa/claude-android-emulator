@@ -14,8 +14,8 @@ built-in iOS Simulator panel.
 - The Android SDK with the emulator, found through `ANDROID_HOME`, `ANDROID_SDK_ROOT` or the
   platform's default folder (`~/Library/Android/sdk` on macOS)
 - A virtual device (AVD) made in Android Studio's Device Manager
-- Until the first release ships prebuilt bridges: Go 1.25 or later, which `/emulator` uses to build
-  the bridge on first use
+- Until the first release ships prebuilt bridges: Go, at the version `bridge/go.mod` names, which
+  `/emulator` uses to build the bridge on first use
 
 ## Install
 

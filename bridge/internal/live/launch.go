@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -86,14 +85,14 @@ func (b *Bridge) Start(ctx context.Context, avd string) error {
 		return err
 	}
 	logPath := filepath.Join(b.config.LogDir, "emulator-"+avd+".log")
-	emulator, err := bootOnFreePort(found, avd, logPath)
+	pid, err := bootOnFreePort(found, avd, logPath)
 	if err != nil {
 		b.endLaunch(id, Launch{})
 		return err
 	}
-	b.config.Logger.Info("emulator starting", "avd", avd, "pid", emulator.Pid, "log", logPath)
-	go b.awaitExit(id, emulator, avd, logPath)
-	time.AfterFunc(b.config.LaunchTimeout, func() { b.giveUp(id, emulator, avd, logPath) })
+	b.config.Logger.Info("emulator starting", "avd", avd, "pid", pid, "log", logPath)
+	go b.awaitExit(id, pid, avd, logPath)
+	time.AfterFunc(b.config.LaunchTimeout, func() { b.giveUp(id, pid, avd, logPath) })
 
 	return nil
 }
@@ -137,10 +136,10 @@ func (b *Bridge) endLaunch(id uint64, next Launch) bool {
 	return isCurrent
 }
 
-func bootOnFreePort(found sdk.SDK, avd, logPath string) (*os.Process, error) {
+func bootOnFreePort(found sdk.SDK, avd, logPath string) (int, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	listener.Close()
@@ -149,9 +148,9 @@ func bootOnFreePort(found sdk.SDK, avd, logPath string) (*os.Process, error) {
 }
 
 // awaitExit reports a launch as failed when its emulator exits before the bridge connects to it.
-func (b *Bridge) awaitExit(id uint64, emulator *os.Process, avd, logPath string) {
+func (b *Bridge) awaitExit(id uint64, pid int, avd, logPath string) {
 	for b.isStarting(id) {
-		if !proc.Alive(emulator.Pid) {
+		if !proc.Alive(pid) {
 			if b.endLaunch(id, Launch{AVD: avd, Phase: launchFailed, Error: sdk.LastError(logPath)}) {
 				b.config.Logger.Warn("emulator exited while starting", "avd", avd, "log", logPath)
 			}
@@ -174,11 +173,11 @@ func (b *Bridge) isStartingLocked(id uint64) bool {
 }
 
 // giveUp stops an emulator that never came up, such as one whose gRPC port was taken meanwhile.
-func (b *Bridge) giveUp(id uint64, emulator *os.Process, avd, logPath string) {
+func (b *Bridge) giveUp(id uint64, pid int, avd, logPath string) {
 	reason := fmt.Sprintf("%s did not come up within %s; its log is %s", avd, b.config.LaunchTimeout, logPath)
 	if b.endLaunch(id, Launch{AVD: avd, Phase: launchFailed, Error: reason}) {
 		b.config.Logger.Warn("stopping an emulator that did not come up", "avd", avd, "log", logPath)
-		sdk.Stop(emulator)
+		sdk.Stop(pid)
 	}
 }
 

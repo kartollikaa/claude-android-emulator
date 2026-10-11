@@ -61,6 +61,8 @@ func TestPortZeroAnnouncesTheLiveView(t *testing.T) {
 	select {
 	case first = <-firstLine:
 	case <-time.After(5 * time.Second):
+		cmd.Process.Kill()
+		cmd.Wait()
 		t.Fatalf("no line on stdout within 5 s; stderr: %s", stderr.String())
 	}
 	var announced map[string]string

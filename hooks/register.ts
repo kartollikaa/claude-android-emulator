@@ -11,7 +11,7 @@ import {
 } from './bridge'
 import type { Platform } from './bridge'
 
-// A hook's own time is capped at 10 s, and /emulator waits for the URL inside its hook.
+// Inside HookBudget.ms: /emulator waits for the URL out of its own hook time.
 const ANNOUNCE_MS = 8_000
 const BUILD_TIMEOUT_MS = 300_000
 const STDERR_KEPT = 4_000
@@ -37,7 +37,12 @@ export const register: Register = on => {
   on('command.run', { command: 'emulator' }, async $ => {
     const started = await ensureBridge($)
     if ('problem' in started) return { text: started.problem }
-    $.clock.after(0, () => void $.prompt.submit({ text: openPrompt(started.url) }))
+    $.clock.after(0, () => {
+      const pointAtLiveView = () => $.ui.toast(`Open ${started.url} in the browser pane to see the emulator.`)
+      $.prompt.submit({ text: openPrompt(started.url) }).then(submitted => {
+        if (submitted.drop !== undefined) pointAtLiveView()
+      }, pointAtLiveView)
+    })
 
     return { text: `Android emulator live view: ${started.url}` }
   })
@@ -72,31 +77,43 @@ async function hostPlatform($: EngineInterface): Promise<Platform | null> {
   if ((await $.env.get('OS')) === 'Windows_NT') {
     return windowsPlatform(await $.env.get('PROCESSOR_ARCHITECTURE'))
   }
-  const uname = await $.process.run(['uname', '-sm'])
+  const uname = await $.process.run(['uname', '-sm']).catch(() => null)
 
-  return uname.exitCode === 0 ? unixPlatform(uname.stdout) : null
+  return uname?.exitCode === 0 ? unixPlatform(uname.stdout) : null
 }
 
 /** Builds the bridge from this checkout's sources: development only, a release ships the binaries. */
 async function buildBridge($: EngineInterface, platform: Platform): Promise<Found> {
+  const go = await findGo($)
+  if (go === null) {
+    return { problem: 'The Android bridge is not built, and no Go toolchain was found to build it from bridge/.' }
+  }
   const binary = executable(`${await scratchDirectory($)}/android-bridge-dev`, platform)
-  for (const go of GO_CANDIDATES) {
-    if (go.startsWith('/') && !(await $.fs.exists(go))) continue
-    const built = await $.process
-      .run([go, 'build', '-o', binary, './cmd/android-bridge'], {
-        cwd: `${$.plugin.root}/bridge`,
-        timeoutMs: BUILD_TIMEOUT_MS,
-      })
-      .catch(() => null)
-    if (built === null) continue
-    if (built.exitCode !== 0) {
-      return { problem: `Building the Android bridge failed:\n${lastLines(built.stderr, 20)}` }
-    }
-
-    return { binary }
+  const built = await $.process
+    .run([go, 'build', '-o', binary, './cmd/android-bridge'], {
+      cwd: `${$.plugin.root}/bridge`,
+      timeoutMs: BUILD_TIMEOUT_MS,
+    })
+    .catch((error: unknown) => ({ exitCode: -1, stderr: error instanceof Error ? error.message : String(error) }))
+  if (built.exitCode !== 0) {
+    return { problem: `Building the Android bridge failed:\n${lastLines(built.stderr, 20)}` }
   }
 
-  return { problem: 'The Android bridge is not built, and no Go toolchain was found to build it from bridge/.' }
+  return { binary }
+}
+
+async function findGo($: EngineInterface): Promise<string | null> {
+  for (const go of GO_CANDIDATES) {
+    const isThere = go.startsWith('/')
+      ? await $.fs.exists(go)
+      : await $.process.run([go, 'version']).then(
+          version => version.exitCode === 0,
+          () => false,
+        )
+    if (isThere) return go
+  }
+
+  return null
 }
 
 async function scratchDirectory($: EngineInterface): Promise<string> {
@@ -109,7 +126,7 @@ function runBridge($: EngineInterface, binary: string): Promise<Started> {
   return new Promise(resolve => {
     let stdout = ''
     let stderr = ''
-    let isAnnounced = false
+    let announced: string | null = null
     const bridge = $.process.spawn({ argv: [binary, '-port', '0'] })
     const silence = $.clock.after(ANNOUNCE_MS, () => {
       resolve({
@@ -125,9 +142,9 @@ function runBridge($: EngineInterface, binary: string): Promise<Started> {
             continue
           }
           stdout += text
-          const url = isAnnounced || !stdout.includes('\n') ? null : liveViewFrom(stdout.split('\n')[0] ?? '')
+          const url: string | null = announced !== null || !stdout.includes('\n') ? null : liveViewFrom(stdout.split('\n')[0] ?? '')
           if (url !== null) {
-            isAnnounced = true
+            announced = url
             liveView = url
             silence.cancel()
             resolve({ url })
@@ -139,10 +156,10 @@ function runBridge($: EngineInterface, binary: string): Promise<Started> {
         return
       }
       silence.cancel()
-      liveView = null
+      if (liveView === announced) liveView = null
       const ended = await bridge.result.catch(() => null)
       const how = ended?.signal ? ` (${ended.signal})` : ended?.code != null ? ` (exit ${ended.code})` : ''
-      if (isAnnounced) {
+      if (announced !== null) {
         $.ui.toast(`The Android bridge stopped${how}. Run /emulator to start it again.`)
       } else {
         resolve({ problem: `The Android bridge exited before it announced its live view${how}:\n${lastLines(stderr, 10)}` })

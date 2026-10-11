@@ -150,16 +150,16 @@ func describe(name, avdHome string) AVD {
 
 // Boot starts the emulator for avd with its output in logPath, through a launcher that exits at once:
 // the emulator then belongs to no process tree of the bridge's, so whatever kills that tree spares it.
-func (s SDK) Boot(avd string, grpcPort int, logPath string) (*os.Process, error) {
+func (s SDK) Boot(avd string, grpcPort int, logPath string) (pid int, err error) {
 	if !avdName.MatchString(avd) {
-		return nil, errors.New("not an AVD name: " + avd)
+		return 0, errors.New("not an AVD name: " + avd)
 	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return nil, err
+		return 0, err
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	launcher := exec.Command(self, s.Emulator(), "-avd", avd, "-qt-hide-window", "-gpu", "host",
 		"-grpc", fmt.Sprint(grpcPort), "-grpc-use-token")
@@ -168,14 +168,14 @@ func (s SDK) Boot(avd string, grpcPort int, logPath string) (*os.Process, error)
 	launcher.Stderr = &stderr
 	output, err := launcher.Output()
 	if err != nil {
-		return nil, fmt.Errorf("launching the emulator: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return 0, fmt.Errorf("launching the emulator: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	pid, err = strconv.Atoi(strings.TrimSpace(string(output)))
 	if err != nil {
-		return nil, fmt.Errorf("the emulator launcher answered %q", output)
+		return 0, fmt.Errorf("the emulator launcher answered %q", output)
 	}
 
-	return os.FindProcess(pid)
+	return pid, nil
 }
 
 // RunLauncherIfAsked makes this process the launcher Boot starts: it starts the emulator, prints its pid and exits.
@@ -213,13 +213,17 @@ func launch(argv []string, logPath string) (int, error) {
 }
 
 // Stop asks a booted emulator to shut down and kills it if it is still there after stopGrace.
-func Stop(emulator *os.Process) {
+func Stop(pid int) {
+	emulator, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
 	if err := emulator.Signal(syscall.SIGTERM); err != nil {
 		emulator.Kill()
 		return
 	}
 	time.AfterFunc(stopGrace, func() {
-		if proc.Alive(emulator.Pid) {
+		if proc.Alive(pid) {
 			emulator.Kill()
 		}
 	})

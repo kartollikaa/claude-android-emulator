@@ -12,6 +12,8 @@ type Host = {
   windows?: string
   exists?: (path: string) => boolean
   build?: { exitCode: number; stderr: string }
+  refuse?: (argv: readonly string[]) => string | undefined
+  dropPrompt?: boolean
   bridge?: Bridge
 }
 
@@ -21,6 +23,7 @@ type Seen = {
   spawned: string[][]
   prompts: string[]
   toasts: string[]
+  stopBridge: (index: number) => void
   stopBridges: () => void
 }
 
@@ -39,7 +42,8 @@ function fakeHost(on: On, host: Host): Seen {
     spawned: [],
     prompts: [],
     toasts: [],
-    stopBridges: () => stops.splice(0).forEach(stop => stop()),
+    stopBridge: index => stops[index]?.(),
+    stopBridges: () => stops.forEach(stop => stop()),
   }
   on('env.get', ($, e) => {
     const values: Record<string, string | undefined> = {
@@ -55,10 +59,12 @@ function fakeHost(on: On, host: Host): Seen {
   })
   on('process.run', ($, e) => {
     seen.ran.push({ argv: [...e.argv], cwd: e.init?.cwd })
+    const refusal = host.refuse?.(e.argv)
+    if (refusal !== undefined) return { deny: refusal }
     const isUname = e.argv[0] === 'uname'
     const result = isUname
       ? { exitCode: host.uname === undefined ? 127 : 0, stdout: host.uname ?? '', stderr: '' }
-      : { exitCode: 0, stdout: '', stderr: '', ...host.build }
+      : { exitCode: 0, stdout: '', stderr: '', ...(e.argv[1] === 'build' ? host.build : {}) }
     return { value: { ...result, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('process.spawn', async function* ($, e, next) {
@@ -69,7 +75,7 @@ function fakeHost(on: On, host: Host): Seen {
   })
   on('prompt.submit', ($, e) => {
     seen.prompts.push(e.text)
-    return { text: e.text }
+    return host.dropPrompt ? { drop: 'the session is not taking prompts' } : { text: e.text }
   })
   on('ui.toast', ($, e) => {
     seen.toasts.push(e.text)
@@ -260,5 +266,81 @@ test('reports a bridge that stops later', async ($, on) => {
   expect(seen.toasts).toEqual(['The Android bridge stopped (exit 2). Run /emulator to start it again.'])
   await emulator($)
   expect(seen.spawned.length).toBe(2)
+  seen.stopBridges()
+})
+
+test('falls back to a Go in a common place', async ($, on) => {
+  const seen = fakeHost(on, {
+    ...MAC,
+    exists: path => path.endsWith('/bridge/go.mod') || path === '/opt/homebrew/bin/go',
+    refuse: argv => (argv[0] === 'go' ? 'go: not found' : undefined),
+  })
+
+  await emulator($)
+
+  expect(seen.ran.find(run => run.argv[1] === 'build')?.argv[0]).toBe('/opt/homebrew/bin/go')
+  seen.stopBridges()
+})
+
+test('reports a build that could not run, once', async ($, on) => {
+  const seen = fakeHost(on, {
+    ...MAC,
+    exists: path => path.endsWith('/bridge/go.mod'),
+    refuse: argv => (argv[1] === 'build' ? 'timed out after 300000 ms' : undefined),
+  })
+
+  const answer = await emulator($)
+
+  expect(answer.text).toMatch(/Building the Android bridge failed:\n.*timed out/)
+  expect(seen.ran.filter(run => run.argv[1] === 'build').length).toBe(1)
+  expect(seen.spawned).toEqual([])
+})
+
+test('says so when the platform cannot be told', async ($, on) => {
+  const seen = fakeHost(on, { refuse: argv => (argv[0] === 'uname' ? 'uname: not found' : undefined) })
+
+  const answer = await emulator($)
+
+  expect(answer.text).toMatch(/no bridge for this platform/)
+  expect(seen.spawned).toEqual([])
+})
+
+test('a stopped bridge that exits late leaves the next one in place', async ($, on) => {
+  const clock = mock.clock(on)
+  let isFirst = true
+  const seen = fakeHost(on, {
+    ...MAC,
+    exists: binaryFor('android-bridge-darwin-arm64'),
+    bridge: stopped => {
+      if (!isFirst) return announcing(stopped)
+      isFirst = false
+      return (async function* () {
+        await stopped
+        return { code: null, signal: 'SIGTERM' }
+      })()
+    },
+  })
+
+  const pending = emulator($)
+  await clock.advance(8_000)
+  await pending
+  await emulator($)
+  seen.stopBridge(0)
+  await clock.settle()
+  const again = await emulator($)
+
+  expect(again.text).toContain(URL)
+  expect(seen.spawned.length).toBe(2)
+  seen.stopBridges()
+})
+
+test('names the live view in a toast when the prompt is dropped', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = fakeHost(on, { ...MAC, exists: binaryFor('android-bridge-darwin-arm64'), dropPrompt: true })
+
+  await emulator($)
+  await clock.settle()
+
+  expect(seen.toasts).toEqual([`Open ${URL} in the browser pane to see the emulator.`])
   seen.stopBridges()
 })
