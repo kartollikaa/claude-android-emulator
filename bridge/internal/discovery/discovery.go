@@ -22,8 +22,7 @@ type Emulator struct {
 
 var pidFile = regexp.MustCompile(`^pid_\d+\.ini$`)
 
-// Find lists the emulators in dir that expose a gRPC port, in file-name order.
-// A missing dir means no emulator is running.
+// Find lists the emulators in dir that expose a gRPC port, in file-name order; a missing dir means none run.
 func Find(dir string) ([]Emulator, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {

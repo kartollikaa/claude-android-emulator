@@ -30,14 +30,14 @@ type State struct {
 	Seq       uint32        `json:"seq"`
 }
 
-// Message is one input from the live view or the mod.
+// Message is one input from the live view or the mod; a touch's x and y are screen fractions.
 type Message struct {
-	Type  string  `json:"type"`
-	Phase string  `json:"phase,omitempty"`
-	X     float64 `json:"x,omitempty"`
-	Y     float64 `json:"y,omitempty"`
-	Key   string  `json:"key,omitempty"`
-	Text  string  `json:"text,omitempty"`
+	Type  string   `json:"type"`
+	Phase string   `json:"phase,omitempty"`
+	X     *float64 `json:"x,omitempty"`
+	Y     *float64 `json:"y,omitempty"`
+	Key   string   `json:"key,omitempty"`
+	Text  string   `json:"text,omitempty"`
 }
 
 var (
@@ -73,8 +73,7 @@ func New(config Config) *Bridge {
 	return &Bridge{config: config, viewers: map[chan struct{}]struct{}{}}
 }
 
-// Run keeps an emulator connected until ctx ends: it finds one, streams it, and starts over
-// when it goes away.
+// Run keeps an emulator connected until ctx ends, starting over whenever it goes away.
 func (b *Bridge) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		conn := b.connect(ctx)
@@ -103,7 +102,7 @@ func (b *Bridge) connect(ctx context.Context) *emulator.Conn {
 	}
 	// A crashed emulator leaves its file behind, so try each until one answers.
 	for _, candidate := range found {
-		conn, err := emulator.Dial(ctx, candidate)
+		conn, err := emulator.Dial(ctx, candidate, b.config.Logger)
 		if err == nil {
 			return conn
 		}
@@ -135,12 +134,13 @@ func (b *Bridge) publish(frame emulator.Frame) {
 	b.mu.Lock()
 	b.latest = &frame
 	b.state.Seq = frame.Seq
-	b.state.Stream = emulator.Size{Width: frame.Width, Height: frame.Height}
+	if frame.Width > 0 && frame.Height > 0 {
+		b.state.Stream = emulator.Size{Width: frame.Width, Height: frame.Height}
+	}
 	b.mu.Unlock()
 	b.notifyViewers()
 }
 
-// State reports the current emulator state.
 func (b *Bridge) State() State {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -180,7 +180,6 @@ func (b *Bridge) notifyViewers() {
 	}
 }
 
-// Input forwards one message to the emulator.
 func (b *Bridge) Input(ctx context.Context, message Message) error {
 	deliver, err := message.delivery()
 	if err != nil {
@@ -203,8 +202,11 @@ func (m Message) delivery() (func(context.Context, *emulator.Conn) error, error)
 		if m.Phase != "down" && m.Phase != "move" && m.Phase != "up" {
 			return nil, fmt.Errorf("%w: unknown touch phase %q", ErrBadInput, m.Phase)
 		}
+		if m.X == nil || m.Y == nil {
+			return nil, fmt.Errorf("%w: a touch needs x and y", ErrBadInput)
+		}
 		return func(ctx context.Context, conn *emulator.Conn) error {
-			return conn.Touch(ctx, m.X, m.Y, m.Phase != "up")
+			return conn.Touch(ctx, *m.X, *m.Y, m.Phase != "up")
 		}, nil
 	case "key":
 		if m.Key == "" {

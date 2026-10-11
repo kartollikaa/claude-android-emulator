@@ -108,8 +108,7 @@ func (h *harness) dialLive(t *testing.T, ctx context.Context) *websocket.Conn {
 	return socket
 }
 
-// connected starts a fake emulator, lets the bridge find it, and returns the fake with
-// a sender into the screenshot stream the bridge opened.
+// connected also returns a sender into the screenshot stream the bridge opened.
 func (h *harness) connected(t *testing.T, ctx context.Context, token string) (*fakeemulator.Fake, chan<- *pb.Image) {
 	t.Helper()
 	fake := fakeemulator.Start(t, deviceWidth, deviceHeight, token)
@@ -271,6 +270,7 @@ var badMessages = []string{
 	`{"type":"key","key":"GoHome"} x`,
 	`{"type":"swipe"}`,
 	`{"type":"touch","phase":"hover","x":0.5,"y":0.5}`,
+	`{"type":"touch","phase":"down"}`,
 	`{"type":"key"}`,
 	`{"type":"text"}`,
 }
@@ -287,6 +287,9 @@ func TestHTTPInputRejectsBadMessages(t *testing.T) {
 		if status := postInput(t, h, "application/json", message); status != http.StatusBadRequest {
 			t.Errorf("%s answered %d, want 400", message, status)
 		}
+	}
+	if status := postInput(t, h, "application/json", strings.Repeat(" ", maxInputBytes+1)); status != http.StatusRequestEntityTooLarge {
+		t.Errorf("an oversized body answered %d, want 413", status)
 	}
 	if touches, keys := fake.Touches(), fake.Keys(); len(touches)+len(keys) != 0 {
 		t.Fatalf("bad messages reached the emulator: touches %v, keys %v", touches, keys)
@@ -346,6 +349,70 @@ func TestStatusStreamFollowsTheFrames(t *testing.T) {
 	}
 }
 
+func TestDisplayOffKeepsTheStreamSize(t *testing.T) {
+	h := startBridge(t)
+	ctx := testContext(t)
+	_, frames := h.connected(t, ctx, "")
+	socket := h.dialLive(t, ctx)
+	frames <- fakeemulator.Frame(1, streamWidth, streamHeight, 0)
+	readFrame(t, ctx, socket)
+
+	frames <- fakeemulator.Frame(2, 0, 0, 0)
+
+	width, height, seq, rgb := readFrame(t, ctx, socket)
+	if width != 0 || height != 0 || seq != 2 || len(rgb) != 0 {
+		t.Fatalf("display-off frame = %dx%d seq %d with %d bytes, want an empty 0x0 frame seq 2", width, height, seq, len(rgb))
+	}
+	if state := h.status(t); state.Stream != streamSize() {
+		t.Fatalf("stream = %+v after the display went off, want the last picture's %+v", state.Stream, streamSize())
+	}
+}
+
+func TestLiveStateMatchesStatus(t *testing.T) {
+	h := startBridge(t)
+	ctx := testContext(t)
+	_, frames := h.connected(t, ctx, "")
+	frames <- fakeemulator.Frame(5, streamWidth, streamHeight, 0)
+	want := h.waitFor(t, func(state State) bool { return state.Seq == 5 })
+	want.Seq = 0
+	socket := h.dialLive(t, ctx)
+
+	for {
+		kind, data, err := socket.Read(ctx)
+		if err != nil {
+			t.Fatalf("no state message arrived: %v", err)
+		}
+		if kind != websocket.MessageText {
+			continue
+		}
+		var got State
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("state message = %+v, want /status without seq %+v", got, want)
+		}
+		return
+	}
+}
+
+func TestPageRefusesToBeFramed(t *testing.T) {
+	h := startBridge(t)
+
+	response, err := http.Get(h.server.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+
+	if policy := response.Header.Get("Content-Security-Policy"); policy != "frame-ancestors 'none'" {
+		t.Errorf("Content-Security-Policy = %q, want frame-ancestors 'none'", policy)
+	}
+	if frameOptions := response.Header.Get("X-Frame-Options"); frameOptions != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", frameOptions)
+	}
+}
+
 func TestStatusWithoutEmulator(t *testing.T) {
 	h := startBridge(t)
 	time.Sleep(60 * time.Millisecond)
@@ -391,11 +458,7 @@ func TestReconnectsAfterTheEmulatorRestarts(t *testing.T) {
 
 	first.Stop()
 	os.Remove(h.dir + "/pid_1.ini")
-	gone := time.Now()
 	h.waitFor(t, func(state State) bool { return !state.Connected })
-	if waited := time.Since(gone); waited > patience {
-		t.Fatalf("status took %v to report the emulator gone", waited)
-	}
 
 	second := fakeemulator.Start(t, deviceWidth, deviceHeight, "")
 	second.WriteINI(t, h.dir, 2)

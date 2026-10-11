@@ -4,6 +4,7 @@ package emulator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
@@ -19,13 +20,12 @@ const maxFrameBytes = 64 << 20
 
 const dialTimeout = 5 * time.Second
 
-// Size is a width and height in pixels.
 type Size struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
 }
 
-// Frame is one screen image: RGB888, rows top-down.
+// Frame is one screen image: RGB888, rows top-down; 0×0 means the display is off.
 type Frame struct {
 	Seq    uint32
 	Width  int
@@ -33,12 +33,12 @@ type Frame struct {
 	RGB    []byte
 }
 
-// Conn is an open connection to one emulator.
 type Conn struct {
 	Emulator discovery.Emulator
 	Device   Size
 	conn     *grpc.ClientConn
 	client   pb.EmulatorControllerClient
+	logger   *slog.Logger
 }
 
 type bearerToken string
@@ -51,7 +51,7 @@ func (token bearerToken) GetRequestMetadata(context.Context, ...string) (map[str
 func (bearerToken) RequireTransportSecurity() bool { return false }
 
 // Dial connects to the emulator and reads its native screen size.
-func Dial(ctx context.Context, emulator discovery.Emulator) (*Conn, error) {
+func Dial(ctx context.Context, emulator discovery.Emulator, logger *slog.Logger) (*Conn, error) {
 	options := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxFrameBytes)),
@@ -78,10 +78,9 @@ func Dial(ctx context.Context, emulator discovery.Emulator) (*Conn, error) {
 		return nil, fmt.Errorf("emulator on gRPC port %d reported a %dx%d screen", emulator.GRPCPort, device.Width, device.Height)
 	}
 
-	return &Conn{Emulator: emulator, Device: device, conn: conn, client: client}, nil
+	return &Conn{Emulator: emulator, Device: device, conn: conn, client: client, logger: logger}, nil
 }
 
-// Close drops the connection.
 func (c *Conn) Close() error { return c.conn.Close() }
 
 // StreamSize is the size frames arrive at when streamed at width, keeping the screen's aspect.
@@ -92,7 +91,6 @@ func (c *Conn) StreamSize(width int) Size {
 }
 
 // Stream calls onFrame for each new screen image until ctx ends or the emulator goes away.
-// An unchanged screen sends nothing.
 func (c *Conn) Stream(ctx context.Context, size Size, onFrame func(Frame)) error {
 	frames, err := c.client.StreamScreenshot(ctx, &pb.ImageFormat{
 		Format: pb.ImageFormat_RGB888,
@@ -102,6 +100,7 @@ func (c *Conn) Stream(ctx context.Context, size Size, onFrame func(Frame)) error
 	if err != nil {
 		return err
 	}
+	isMismatchLogged := false
 	for {
 		image, err := frames.Recv()
 		if err != nil {
@@ -109,6 +108,10 @@ func (c *Conn) Stream(ctx context.Context, size Size, onFrame func(Frame)) error
 		}
 		width, height := int(image.GetFormat().GetWidth()), int(image.GetFormat().GetHeight())
 		if len(image.GetImage()) != width*height*3 {
+			if !isMismatchLogged {
+				c.logger.Warn("dropping frames that are not RGB888", "width", width, "height", height, "bytes", len(image.GetImage()))
+				isMismatchLogged = true
+			}
 			continue
 		}
 		onFrame(Frame{Seq: image.GetSeq(), Width: width, Height: height, RGB: image.GetImage()})
@@ -137,7 +140,6 @@ func (c *Conn) Key(ctx context.Context, key string) error {
 	return err
 }
 
-// Text types text as the keyboard would.
 func (c *Conn) Text(ctx context.Context, text string) error {
 	_, err := c.client.SendKey(ctx, &pb.KeyboardEvent{EventType: pb.KeyboardEvent_keypress, Text: text})
 

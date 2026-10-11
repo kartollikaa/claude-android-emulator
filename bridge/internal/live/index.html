@@ -46,7 +46,6 @@
     gap: 6px; text-align: center; color: var(--muted); padding: 24px;
   }
   .waiting strong { color: var(--fg); font-weight: 600; }
-  .waiting code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
   body.offline canvas { visibility: hidden; }
   body.offline .waiting { display: flex; }
   nav { display: flex; gap: 8px; }
@@ -63,9 +62,8 @@
   <div class="device">
     <canvas id="screen" width="540" height="1200" tabindex="0" aria-label="Android screen: click to tap, drag to swipe, type to send keys"></canvas>
     <div class="waiting" id="waiting">
-      <strong>Waiting for the emulator</strong>
-      <span>Start one with gRPC on:</span>
-      <code>emulator -avd NAME -qt-hide-window -gpu host -grpc 8554</code>
+      <strong>No emulator running</strong>
+      <span>The screen shows up here as soon as one starts.</span>
     </div>
   </div>
   <nav>
@@ -96,6 +94,12 @@
   function draw(header, rgb) {
     const width = header.getUint32(0, true)
     const height = header.getUint32(4, true)
+    // An empty frame means the display went off: black out the screen, keep its size.
+    if (!width || !height) {
+      context.fillStyle = '#000'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      return
+    }
     if (!image || image.width !== width || image.height !== height) {
       canvas.width = width
       canvas.height = height

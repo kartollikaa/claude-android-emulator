@@ -19,7 +19,6 @@ import (
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 )
 
-// Fake is one fake emulator listening on a loopback port.
 type Fake struct {
 	pb.UnimplementedEmulatorControllerServer
 
@@ -132,14 +131,12 @@ func Frame(seq uint32, width, height int, fill byte) *pb.Image {
 	}
 }
 
-// Touches returns the touches received so far.
 func (f *Fake) Touches() []*pb.Touch {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]*pb.Touch(nil), f.touches...)
 }
 
-// Keys returns the keyboard events received so far.
 func (f *Fake) Keys() []*pb.KeyboardEvent {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -158,8 +155,13 @@ func (f *Fake) GetScreenshot(context.Context, *pb.ImageFormat) (*pb.Image, error
 }
 
 func (f *Fake) StreamScreenshot(_ *pb.ImageFormat, stream grpc.ServerStreamingServer[pb.Image]) error {
-	frames := make(chan *pb.Image)
-	f.streams <- frames
+	// Buffered, so a test sending into a stream that already ended fails on its read instead of hanging.
+	frames := make(chan *pb.Image, 16)
+	select {
+	case f.streams <- frames:
+	case <-stream.Context().Done():
+		return nil
+	}
 	for {
 		select {
 		case frame := <-frames:

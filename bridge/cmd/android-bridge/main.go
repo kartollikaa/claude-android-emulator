@@ -1,5 +1,4 @@
-// Command android-bridge streams the running Android emulator to a live view on
-// http://127.0.0.1:<port> and forwards touches and keys back to it.
+// Command android-bridge serves the running emulator's screen and input on http://127.0.0.1:<port>.
 package main
 
 import (

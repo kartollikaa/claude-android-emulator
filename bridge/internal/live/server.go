@@ -39,6 +39,9 @@ func (b *Bridge) Handler() http.Handler {
 	routes.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "text/html; charset=utf-8")
 		w.Header().Set("cache-control", "no-store")
+		// A framed page would let another site steer clicks onto the emulator.
+		w.Header().Set("content-security-policy", "frame-ancestors 'none'")
+		w.Header().Set("x-frame-options", "DENY")
 		w.Write(page)
 	})
 	routes.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
@@ -99,8 +102,12 @@ func (b *Bridge) serveInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxInputBytes))
-	if err != nil {
+	if tooLarge := (*http.MaxBytesError)(nil); errors.As(err, &tooLarge) {
 		http.Error(w, "input is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if err != nil {
+		http.Error(w, "cannot read the input: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	var message Message
@@ -179,7 +186,8 @@ func (b *Bridge) writeFrames(ctx context.Context, socket *websocket.Conn) error 
 		case <-changes:
 		}
 		state, frame := b.snapshot()
-		connection := State{Connected: state.Connected, Serial: state.Serial, Device: state.Device, Stream: state.Stream}
+		connection := state
+		connection.Seq = 0
 		if sentState == nil || *sentState != connection {
 			message, _ := json.Marshal(struct {
 				Type string `json:"type"`

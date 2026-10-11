@@ -4,9 +4,9 @@ A Claude Code mod that shows an Android emulator or a USB device right inside Cl
 terminal and in the desktop app's Code tab. It is the Android counterpart of the desktop app's
 built-in iOS Simulator panel.
 
-> **Status: walking skeleton.** `/emulator` opens a pane that lists attached devices and shows a
-> screenshot of the selected one on demand. Live streaming, input forwarding and model-facing
-> tools come next: see [docs/plan.md](docs/plan.md).
+> **Status: in development.** The live, touchable screen runs in the desktop app's built-in browser
+> pane through the bridge. Next: `/emulator` starts everything and a Start button boots an emulator,
+> so nothing is run by hand; then model-facing tools. See [docs/plan.md](docs/plan.md).
 
 ## Requirements
 
@@ -54,13 +54,11 @@ claude plugin test ~/Projects/claude-android-emulator
 Once a session has loaded the mod from this folder, the engine writes the API types to
 `.claude-plugin/types/` (git-ignored), and `tsc -p .` type-checks the mod.
 
-## Live view
+### The bridge by hand
 
 `bridge/` is the Android bridge: a small Go program that finds the running emulator, streams its
-screen to a page on `http://127.0.0.1:7357`, and sends your clicks, drags and keys back. Open that
-page in the desktop app's built-in browser pane for a live, touchable emulator.
-
-Start the emulator with gRPC on and the host GPU (`-no-window` falls back to software rendering,
+screen to a page on `http://127.0.0.1:7357`, and sends clicks, drags and keys back. Until the mod
+starts it, run it by hand to work on it. Start the emulator with gRPC on and the host GPU (`-no-window` falls back to software rendering,
 which caps the frame rate):
 
 ```bash
@@ -75,12 +73,13 @@ go -C bridge run ./cmd/android-bridge
 
 Then ask Claude to open `http://127.0.0.1:7357` in the browser pane. Click to tap, drag to swipe,
 click the screen and type to send keys (Esc is Back), and use the Back / Home / Recents buttons.
-`-port`, `-stream-width` and `-v` (debug logs) are the bridge's flags.
+`-port`, `-stream-width`, `-discovery-dir` (where emulators write `pid_<pid>.ini`) and `-v` (debug
+logs) are the bridge's flags.
 
 The page serves only this machine: the bridge listens on 127.0.0.1 and refuses requests whose
 `Host` or `Origin` is not its own, so no other web page can read the screen or drive the emulator.
 
-## Prototypes: live desktop views
+### Prototypes: live desktop views
 
 `prototypes/live-helper` is the throwaway Node helper the live views were compared with; the bridge
 replaces its live page, and the mod's in-pane live mode still reads its frames until the mod becomes
