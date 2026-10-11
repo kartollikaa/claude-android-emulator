@@ -98,7 +98,7 @@ reconnects when one restarts.
 The bridge's flags:
 
 - `-port`: the live view's port (0 picks a free one).
-- `-stream-width`: the width of the streamed frames.
+- `-stream-width`: the streamed frames' short side, their width in portrait.
 - `-sdk`: the Android SDK folder; otherwise `ANDROID_HOME`, `ANDROID_SDK_ROOT`, then the platform's
   default.
 - `-discovery-dir`: where emulators write `pid_<pid>.ini`.
@@ -110,8 +110,8 @@ The toolbar's routes, each a `POST` with a JSON body: `/rotate` (`{"direction": 
 `/app-settings`. Rotation goes through the emulator's rotation sensor and screenshots through gRPC;
 recording (`screenrecord`) and App info use adb from the SDK's `platform-tools`, or from `PATH`.
 Frames are drawn upright, so the page sends touches in the upright picture and the bridge turns them
-back onto the panel. `/status` carries the `rotation`, `recordingSince` while recording, and the
-newest saved file as `saved`.
+back onto the panel. `/status` carries the `rotation`, `recordingSince` while recording, the
+newest saved file as `saved`, and `recordingError` when a recording could not be saved.
 
 The page serves only this machine: the bridge listens on 127.0.0.1 and refuses requests whose
 `Host` or `Origin` is not its own, so no other web page can read the screen or drive the emulator.

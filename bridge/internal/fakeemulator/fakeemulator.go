@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -39,6 +40,7 @@ type Fake struct {
 	isBooted bool
 	angles   []float32
 	turns    int
+	readTime time.Duration
 	asked    []*pb.ImageFormat
 	vmStates []pb.VmRunState_RunState
 	touches  []*pb.Touch
@@ -206,6 +208,13 @@ func (f *Fake) SetAngles(angles ...float32) {
 	f.angles = angles
 }
 
+// SetSensorReadTime makes getPhysicalModel take that long, so calls made together overlap.
+func (f *Fake) SetSensorReadTime(readTime time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readTime = readTime
+}
+
 // Angles returns the rotation sensor and how many times it was set.
 func (f *Fake) Angles() (angles []float32, turns int) {
 	f.mu.Lock()
@@ -214,6 +223,10 @@ func (f *Fake) Angles() (angles []float32, turns int) {
 }
 
 func (f *Fake) GetPhysicalModel(_ context.Context, value *pb.PhysicalModelValue) (*pb.PhysicalModelValue, error) {
+	f.mu.Lock()
+	readTime := f.readTime
+	f.mu.Unlock()
+	time.Sleep(readTime)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if value.GetTarget() != pb.PhysicalModelValue_ROTATION {

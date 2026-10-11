@@ -35,17 +35,18 @@ type Config struct {
 
 // State is what the bridge knows about the emulator, as /status and the live view see it.
 type State struct {
-	Connected bool              `json:"connected"`
-	Booted    bool              `json:"booted"`
-	Serial    string            `json:"serial"`
-	AVD       string            `json:"avd"`
-	Device    emulator.Size     `json:"device"`
-	Stream    emulator.Size     `json:"stream"`
-	Seq       uint32            `json:"seq"`
-	Launch    Launch            `json:"launch,omitzero"`
-	Rotation  emulator.Rotation `json:"rotation"`
-	// RecordingSince is when the running screen recording started.
-	RecordingSince time.Time `json:"recordingSince,omitzero"`
+	Connected      bool              `json:"connected"`
+	Booted         bool              `json:"booted"`
+	Serial         string            `json:"serial"`
+	AVD            string            `json:"avd"`
+	Device         emulator.Size     `json:"device"`
+	Stream         emulator.Size     `json:"stream"`
+	Seq            uint32            `json:"seq"`
+	Launch         Launch            `json:"launch,omitzero"`
+	Rotation       emulator.Rotation `json:"rotation"`
+	RecordingSince time.Time         `json:"recordingSince,omitzero"`
+	// RecordingError says why the newest recording was not saved.
+	RecordingError string `json:"recordingError,omitempty"`
 	// Saved is the newest screenshot or recording saved, so the page can say where.
 	Saved string `json:"saved,omitempty"`
 }
@@ -164,7 +165,7 @@ func (b *Bridge) attach(conn *emulator.Conn) {
 	b.mu.Lock()
 	b.conn = conn
 	b.latest = nil
-	b.state = State{Connected: true, Serial: conn.Emulator.Serial, AVD: conn.Emulator.AVD, Device: conn.Device}
+	b.state = b.keepingCaptures(State{Connected: true, Serial: conn.Emulator.Serial, AVD: conn.Emulator.AVD, Device: conn.Device})
 	if b.launch.Phase == launchFailed || b.launch.AVD == conn.Emulator.AVD {
 		b.launch = Launch{}
 	}
@@ -198,9 +199,16 @@ func (b *Bridge) detach() {
 	b.mu.Lock()
 	b.conn = nil
 	b.latest = nil
-	b.state = State{}
+	b.state = b.keepingCaptures(State{})
 	b.mu.Unlock()
 	b.notifyViewers()
+}
+
+// keepingCaptures carries the recording and the newest saved file over a reconnect, which does not end a recording.
+func (b *Bridge) keepingCaptures(state State) State {
+	state.RecordingSince, state.RecordingError, state.Saved = b.state.RecordingSince, b.state.RecordingError, b.state.Saved
+
+	return state
 }
 
 func (b *Bridge) publish(frame emulator.Frame) {

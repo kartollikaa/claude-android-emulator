@@ -8,6 +8,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -72,6 +73,8 @@ type Conn struct {
 	logger   *slog.Logger
 	// The rotation of the newest frame; touches arrive in its coordinates.
 	rotation atomic.Int32
+	// Rotate reads the sensor before setting it, so two at once would turn the device once.
+	rotating sync.Mutex
 }
 
 type bearerToken string
@@ -203,6 +206,8 @@ func (r Rotation) toPanel(x, y float64) (float64, float64) {
 
 // Rotate turns the device quarters of a turn, counter-clockwise for a positive count, keeping its tilt.
 func (c *Conn) Rotate(ctx context.Context, quarters int) error {
+	c.rotating.Lock()
+	defer c.rotating.Unlock()
 	current, err := c.client.GetPhysicalModel(ctx, &pb.PhysicalModelValue{Target: pb.PhysicalModelValue_ROTATION})
 	if err != nil {
 		return err

@@ -320,8 +320,8 @@
     try { await act() } finally { button.disabled = false }
   }
 
-  el('rotate-left').addEventListener('click', () => control('/rotate', { direction: 'left' }))
-  el('rotate-right').addEventListener('click', () => control('/rotate', { direction: 'right' }))
+  el('rotate-left').addEventListener('click', event => busy(event.currentTarget, () => control('/rotate', { direction: 'left' })))
+  el('rotate-right').addEventListener('click', event => busy(event.currentTarget, () => control('/rotate', { direction: 'right' })))
   el('screenshot').addEventListener('click', event => busy(event.currentTarget, () => control('/screenshot')))
   el('app-info').addEventListener('click', event => busy(event.currentTarget, () => control('/app-settings')))
 
@@ -330,7 +330,9 @@
   let recordingSince = 0
   record.addEventListener('click', () => busy(record, () => control(recordingSince ? '/recording/stop' : '/recording/start')))
   function showRecording(state) {
-    recordingSince = state.recordingSince ? Date.parse(state.recordingSince) : 0
+    const since = state.recordingSince ? Date.parse(state.recordingSince) : 0
+    if (recordingSince && !since && state.recordingError) note(`The recording was not saved: ${state.recordingError}`, true)
+    recordingSince = since
     record.classList.toggle('recording', recordingSince > 0)
     record.title = recordingSince ? 'Stop recording' : 'Record the screen'
     tickRecording()

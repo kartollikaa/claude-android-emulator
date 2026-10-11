@@ -55,11 +55,13 @@ func (b *Bridge) Handler() http.Handler {
 	routes.HandleFunc("GET /avds", b.serveAVDs)
 	routes.HandleFunc("POST /emulators/start", b.serveStart)
 	routes.HandleFunc("POST /shutdown", b.serveShutdown)
-	routes.HandleFunc("POST /rotate", b.serveRotate)
-	routes.HandleFunc("POST /screenshot", b.serveCapture(b.Screenshot, inputTimeout))
-	routes.HandleFunc("POST /recording/start", b.serveControl(b.StartRecording))
-	routes.HandleFunc("POST /recording/stop", b.serveCapture(b.StopRecording, recordingSaveTimeout))
-	routes.HandleFunc("POST /app-settings", b.serveControl(b.OpenAppSettings))
+	routes.HandleFunc("POST /rotate", serveAction(inputTimeout, func(ctx context.Context, request rotateRequest) (any, error) {
+		return nil, b.Rotate(ctx, request.Direction)
+	}))
+	routes.HandleFunc("POST /screenshot", serveAction(inputTimeout, answeringPath(b.Screenshot)))
+	routes.HandleFunc("POST /recording/start", serveAction(sdkTimeout, answeringNothing(b.StartRecording)))
+	routes.HandleFunc("POST /recording/stop", serveAction(recordingStopTimeout, answeringPath(b.StopRecording)))
+	routes.HandleFunc("POST /app-settings", serveAction(sdkTimeout, answeringNothing(b.OpenAppSettings)))
 
 	return guardLocal(routes)
 }
@@ -190,64 +192,52 @@ func (b *Bridge) serveShutdown(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (b *Bridge) serveRotate(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		Direction string `json:"direction"`
-	}
-	if !readJSON(w, r, &request) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), inputTimeout)
-	defer cancel()
-	if err := b.Rotate(ctx, request.Direction); err != nil {
-		http.Error(w, err.Error(), controlErrorStatus(err))
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+type rotateRequest struct {
+	Direction string `json:"direction"`
 }
 
-// serveControl answers a body-less JSON request with act's outcome.
-func (b *Bridge) serveControl(act func(context.Context) error) http.HandlerFunc {
+// serveAction decodes the JSON body, runs act within timeout and answers its result as JSON, or 204 when it has none.
+func serveAction[Request any](timeout time.Duration, act func(context.Context, Request) (any, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var request struct{}
-		if !readJSON(w, r, &request) {
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), sdkTimeout)
-		defer cancel()
-		if err := act(ctx); err != nil {
-			http.Error(w, err.Error(), controlErrorStatus(err))
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-// serveCapture answers a body-less JSON request with the path of the file capture saved.
-func (b *Bridge) serveCapture(capture func(context.Context) (string, error), timeout time.Duration) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var request struct{}
+		var request Request
 		if !readJSON(w, r, &request) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
-		path, err := capture(ctx)
+		answer, err := act(ctx, request)
 		if err != nil {
 			http.Error(w, err.Error(), controlErrorStatus(err))
 			return
 		}
+		if answer == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		w.Header().Set("content-type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"path": path})
+		json.NewEncoder(w).Encode(answer)
+	}
+}
+
+func answeringNothing(act func(context.Context) error) func(context.Context, struct{}) (any, error) {
+	return func(ctx context.Context, _ struct{}) (any, error) { return nil, act(ctx) }
+}
+
+func answeringPath(capture func(context.Context) (string, error)) func(context.Context, struct{}) (any, error) {
+	return func(ctx context.Context, _ struct{}) (any, error) {
+		path, err := capture(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"path": path}, nil
 	}
 }
 
 func controlErrorStatus(err error) int {
-	var noSDK *sdk.NotFoundError
 	switch {
 	case errors.Is(err, ErrBadInput):
 		return http.StatusBadRequest
-	case errors.Is(err, ErrNoEmulator), errors.Is(err, ErrNoADB), errors.As(err, &noSDK):
+	case errors.Is(err, ErrNoEmulator), errors.Is(err, ErrNoADB):
 		return http.StatusServiceUnavailable
 	case errors.Is(err, ErrRecording), errors.Is(err, ErrNotRecording), errors.Is(err, ErrHomeInFront):
 		return http.StatusConflict

@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -19,27 +21,32 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 )
 
-// The fake adb keeps the device's files in device/, logs each call to calls, and records until SIGINT.
+// The fake adb logs calls to calls, keeps device files in device/ and records until SIGINT; files named offline, broken, limit and pull-time steer it.
 const fakeADB = `#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
+[ -f "$d/offline" ] && { echo "adb: device offline" >&2; exit 1; }
 shift 2
 case "$1" in
 shell)
   case "$2" in
-  screenrecord)
-    name=$(basename "$3")
+  *"exec screenrecord "*)
+    name=$(basename "${2##* }")
     echo $$ >> "$d/recorders"
+    echo $$
+    [ -f "$d/broken" ] && { cat "$d/broken" >&2; exit 1; }
     finish() { printf 'MP4 %s' "$name" > "$d/device/$name"; exit 0; }
     trap finish INT
     if [ -f "$d/limit" ]; then sleep "$(cat "$d/limit")"; finish; fi
     while :; do sleep 0.05; done ;;
-  "kill -2 "*) kill -INT $(cat "$d/recorders") ;;
+  kill*) sh -c "$2" ;;
   rm) rm -f "$d/device/$(basename "$4")" ;;
   dumpsys) cat "$d/activities" ;;
   cmd) printf 'priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.google.android.apps.nexuslauncher/.NexusLauncherActivity\n' ;;
   esac ;;
-pull) cp "$d/device/$(basename "$2")" "$3" ;;
+pull)
+  [ -f "$d/pull-time" ] && sleep "$(cat "$d/pull-time")"
+  cp "$d/device/$(basename "$2")" "$3" ;;
 esac
 `
 
@@ -116,6 +123,31 @@ func TestRotateTurnsTheDeviceAQuarter(t *testing.T) {
 		if angles, _ := fake.Angles(); !reflect.DeepEqual(angles, step.want) {
 			t.Errorf("rotate %s from %v: sensor %v, want %v", step.direction, step.from, angles, step.want)
 		}
+	}
+}
+
+func TestRotationsTogetherTurnTheDeviceTwice(t *testing.T) {
+	h := startBridge(t)
+	fake, _ := h.connected(t, testContext(t), "")
+	fake.SetSensorReadTime(100 * time.Millisecond)
+
+	var presses sync.WaitGroup
+	for range 2 {
+		presses.Go(func() {
+			response, err := http.Post(h.server.URL+"/rotate", "application/json", strings.NewReader(`{"direction":"left"}`))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			response.Body.Close()
+			if response.StatusCode != http.StatusNoContent {
+				t.Errorf("rotate answered %d, want 204", response.StatusCode)
+			}
+		})
+	}
+	presses.Wait()
+	if angles, turns := fake.Angles(); angles[2] != -180 || turns != 2 {
+		t.Errorf("two rotations left at once left the sensor at %v after %d sets, want z -180 after 2", angles, turns)
 	}
 }
 
@@ -248,8 +280,103 @@ func TestRecordingStartsAndStops(t *testing.T) {
 	if state := h.status(t); !state.RecordingSince.IsZero() || state.Saved != path {
 		t.Errorf("status after stop: recording since %v, saved %q; want no recording and %q", state.RecordingSince, state.Saved, path)
 	}
-	if calls := adbCalls(tools); !strings.HasPrefix(calls[0], "-s "+serial+" shell screenrecord /sdcard/claude-recording-") {
+	calls := adbCalls(tools)
+	if !strings.HasPrefix(calls[0], "-s "+serial+" shell echo $$; exec screenrecord /sdcard/claude-recording-") {
 		t.Errorf("first adb call %q, want screenrecord on %s", calls[0], serial)
+	}
+	recorder, _ := os.ReadFile(filepath.Join(tools, "recorders"))
+	if !slices.ContainsFunc(calls, func(call string) bool {
+		return strings.HasPrefix(call, "-s "+serial+" shell kill -INT "+strings.TrimSpace(string(recorder))+" ")
+	}) {
+		t.Errorf("adb calls %q interrupt no screenrecord by the pid it printed, %s", calls, recorder)
+	}
+}
+
+func TestRecordingSurvivesAReconnect(t *testing.T) {
+	root, tools := sdkWithADB(t)
+	h := startBridge(t, withSDK(root), atMoment)
+	ctx := testContext(t)
+	first, _ := h.connected(t, ctx, "")
+	if status, body := control(t, h, "/recording/start", `{}`); status != http.StatusNoContent {
+		t.Fatalf("start answered %d %s, want 204", status, body)
+	}
+
+	first.Stop()
+	os.Remove(filepath.Join(h.dir, "pid_1.ini"))
+	if state := h.waitFor(t, func(state State) bool { return !state.Connected }); !state.RecordingSince.Equal(moment) {
+		t.Errorf("while the emulator is away, recording since %v, want %v", state.RecordingSince, moment)
+	}
+	second := fakeemulator.Start(t, deviceWidth, deviceHeight, "")
+	second.WriteINI(t, h.dir, 1)
+	second.NextStream(t, ctx)
+	if state := h.waitFor(t, func(state State) bool { return state.Connected }); !state.RecordingSince.Equal(moment) {
+		t.Errorf("after the reconnect, recording since %v, want %v", state.RecordingSince, moment)
+	}
+
+	status, answer := control(t, h, "/recording/stop", `{}`)
+	if status != http.StatusOK {
+		t.Fatalf("stop after the reconnect answered %d %s, want 200", status, answer)
+	}
+	if data, _ := os.ReadFile(savedPath(t, answer)); !strings.HasPrefix(string(data), "MP4 claude-recording-") {
+		t.Errorf("saved %q, want the device's MP4", data)
+	}
+	if left, _ := os.ReadDir(filepath.Join(tools, "device")); len(left) != 0 {
+		t.Errorf("the device still holds %v", left)
+	}
+}
+
+func TestStopAsTheRecordingEndsByItself(t *testing.T) {
+	root, tools := sdkWithADB(t)
+	writeFile(t, filepath.Join(tools, "limit"), "0.1")
+	writeFile(t, filepath.Join(tools, "pull-time"), "1")
+	h := startBridge(t, withSDK(root), atMoment)
+	h.connected(t, testContext(t), "")
+
+	if status, body := control(t, h, "/recording/start", `{}`); status != http.StatusNoContent {
+		t.Fatalf("start answered %d %s, want 204", status, body)
+	}
+	eventually(t, func() bool { left, _ := os.ReadDir(filepath.Join(tools, "device")); return len(left) > 0 }, "the recording ending by itself")
+	status, answer := control(t, h, "/recording/stop", `{}`)
+	if status != http.StatusOK {
+		t.Fatalf("stop while the ended recording is saved answered %d %s, want 200", status, answer)
+	}
+	if data, _ := os.ReadFile(savedPath(t, answer)); !strings.HasPrefix(string(data), "MP4 claude-recording-") {
+		t.Errorf("saved %q, want the device's MP4", data)
+	}
+}
+
+func TestRecordingThatFailsSaysWhy(t *testing.T) {
+	root, tools := sdkWithADB(t)
+	writeFile(t, filepath.Join(tools, "broken"), "ERROR: unable to create video encoder")
+	h := startBridge(t, withSDK(root), atMoment)
+	h.connected(t, testContext(t), "")
+
+	if status, body := control(t, h, "/recording/start", `{}`); status != http.StatusNoContent {
+		t.Fatalf("start answered %d %s, want 204", status, body)
+	}
+	state := h.waitFor(t, func(state State) bool { return state.RecordingSince.IsZero() })
+	if !strings.Contains(state.RecordingError, "unable to create video encoder") || state.Saved != "" {
+		t.Errorf("status after a failed recording: error %q, saved %q; want screenrecord's error and nothing saved", state.RecordingError, state.Saved)
+	}
+	if saved, _ := os.ReadDir(h.bridge.config.CapturesDir); len(saved) != 0 {
+		t.Errorf("a failed recording left %v", saved)
+	}
+}
+
+func TestRecordingOnAnOfflineDevice(t *testing.T) {
+	root, tools := sdkWithADB(t)
+	writeFile(t, filepath.Join(tools, "offline"), "")
+	h := startBridge(t, withSDK(root), atMoment)
+	h.connected(t, testContext(t), "")
+
+	if status, body := control(t, h, "/recording/start", `{}`); status != http.StatusBadGateway || !strings.Contains(body, "device offline") {
+		t.Errorf("start on an offline device answered %d %q, want 502 naming adb's error", status, body)
+	}
+	if state := h.status(t); !state.RecordingSince.IsZero() || !strings.Contains(state.RecordingError, "device offline") {
+		t.Errorf("status after the failed start: recording since %v, error %q", state.RecordingSince, state.RecordingError)
+	}
+	if status, _ := control(t, h, "/recording/stop", `{}`); status != http.StatusConflict {
+		t.Errorf("stop after the failed start answered %d, want 409", status)
 	}
 }
 

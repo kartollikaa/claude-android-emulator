@@ -1,6 +1,7 @@
 package live
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/adb"
@@ -16,8 +19,12 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
-// The device's screenrecord stops by itself at its own time limit; pulling the file takes a moment more.
-const recordingSaveTimeout = 30 * time.Second
+const (
+	// The device caps a recording's length, so pulling one is bounded too.
+	recordingSaveTimeout = 30 * time.Second
+	// Stopping waits for screenrecord to finish the MP4 and then for the save.
+	recordingStopTimeout = sdkTimeout + recordingSaveTimeout
+)
 
 var (
 	// ErrRecording is returned for a start while a screen recording runs, ErrNotRecording for a stop without one.
@@ -30,10 +37,14 @@ var (
 )
 
 type recording struct {
+	device     adb.Device
 	devicePath string
-	done       chan struct{}
-	saved      string
-	err        error
+	// pid is screenrecord's on the device, known once started closes; empty if it never ran.
+	pid     string
+	started chan struct{}
+	done    chan struct{}
+	saved   string
+	err     error
 }
 
 func defaultCapturesDir(home string) string {
@@ -98,21 +109,60 @@ func (b *Bridge) StartRecording(ctx context.Context) error {
 		return ErrRecording
 	}
 	current := &recording{
+		device:     device,
 		devicePath: fmt.Sprintf("/sdcard/claude-recording-%d.mp4", b.config.Now().UnixNano()),
+		started:    make(chan struct{}),
 		done:       make(chan struct{}),
 	}
 	b.recording = current
 	b.state.RecordingSince = b.config.Now()
+	b.state.RecordingError = ""
 	b.mu.Unlock()
-	recorder := device.Command("shell", "screenrecord", current.devicePath)
-	if err := recorder.Start(); err != nil {
-		b.endRecording(current, "", err)
-		return err
+	// The shell prints its pid and becomes screenrecord, so a stop interrupts this recording and no other.
+	recorder := device.Command("shell", "echo $$; exec screenrecord "+current.devicePath)
+	var stderr strings.Builder
+	recorder.Stderr = &stderr
+	pid, err := startRecorder(ctx, recorder)
+	if err != nil {
+		close(current.started)
+		b.endRecording(current, "", fmt.Errorf("cannot start screenrecord: %w: %s", err, strings.TrimSpace(stderr.String())))
+		return current.err
 	}
+	current.pid = pid
+	close(current.started)
 	b.notifyViewers()
-	go b.saveRecording(device, recorder, current)
+	go b.saveRecording(recorder, &stderr, current)
 
 	return nil
+}
+
+// startRecorder starts the recorder and reads the device pid it prints first.
+func startRecorder(ctx context.Context, recorder *exec.Cmd) (string, error) {
+	stdout, err := recorder.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := recorder.Start(); err != nil {
+		return "", err
+	}
+	line := make(chan string, 1)
+	go func() {
+		text, _ := bufio.NewReader(stdout).ReadString('\n')
+		line <- strings.TrimSpace(text)
+	}()
+	select {
+	case pid := <-line:
+		if _, err := strconv.Atoi(pid); err == nil {
+			return pid, nil
+		}
+		err = fmt.Errorf("the device answered %q instead of a pid", pid)
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+	recorder.Process.Kill()
+	recorder.Wait()
+
+	return "", err
 }
 
 // StopRecording interrupts the screen recording and returns the path it was saved to.
@@ -123,13 +173,17 @@ func (b *Bridge) StopRecording(ctx context.Context) (string, error) {
 	if current == nil {
 		return "", ErrNotRecording
 	}
-	device, err := b.adbDevice()
-	if err != nil {
-		return "", err
+	select {
+	case <-current.started:
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
-	// screenrecord finishes the MP4 on SIGINT, as on Ctrl-C.
-	if _, err := device.Run(ctx, "shell", "kill -2 $(pidof screenrecord)"); err != nil {
-		return "", err
+	if current.pid != "" {
+		// screenrecord finishes the MP4 on SIGINT, as on Ctrl-C; one already gone ended by itself and is being saved.
+		interrupt := fmt.Sprintf("kill -INT %[1]s 2>/dev/null || ! kill -0 %[1]s 2>/dev/null", current.pid)
+		if _, err := current.device.Run(ctx, "shell", interrupt); err != nil {
+			return "", err
+		}
 	}
 	select {
 	case <-current.done:
@@ -139,12 +193,15 @@ func (b *Bridge) StopRecording(ctx context.Context) (string, error) {
 	}
 }
 
-func (b *Bridge) saveRecording(device adb.Device, recorder *exec.Cmd, current *recording) {
-	recorder.Wait()
+func (b *Bridge) saveRecording(recorder *exec.Cmd, stderr *strings.Builder, current *recording) {
+	recordErr := recorder.Wait()
 	ctx, cancel := context.WithTimeout(context.Background(), recordingSaveTimeout)
 	defer cancel()
-	path, err := b.pullCapture(ctx, device, current.devicePath)
-	device.Run(ctx, "shell", "rm", "-f", current.devicePath)
+	path, err := b.pullCapture(ctx, current.device, current.devicePath)
+	current.device.Run(ctx, "shell", "rm", "-f", current.devicePath)
+	if err != nil && recordErr != nil {
+		err = fmt.Errorf("screenrecord failed: %w: %s", recordErr, strings.TrimSpace(stderr.String()))
+	}
 	if err != nil {
 		b.config.Logger.Warn("cannot save the screen recording", "err", err)
 	}
@@ -172,6 +229,8 @@ func (b *Bridge) endRecording(current *recording, path string, err error) {
 		b.state.RecordingSince = time.Time{}
 		if err == nil {
 			b.state.Saved = path
+		} else {
+			b.state.RecordingError = err.Error()
 		}
 	}
 	b.mu.Unlock()
