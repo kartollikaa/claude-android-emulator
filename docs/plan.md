@@ -118,10 +118,11 @@ One PR per item, each reviewed before the next starts.
 1. **Desktop view prototypes**: the spikes in the spike log; settles the browser pane.
 2. **Bridge v0** (`bridge/`, Go): emulator discovery, gRPC client from the pinned proto, the live
    view page (device only, Back / Home / Recents, keyboard), WebSocket frames and input, a status
-   endpoint; tested against a fake gRPC server. Replaces `prototypes/live-helper`.
+   endpoint, a guard against other sites (loopback only, own `Host` and `Origin`); tested against a
+   fake gRPC server.
 3. **Mod as launcher**: `/emulator` spawns the bridge and stops it with the session, a status pane
    (devices, bridge state, a link to the live view), the prompt that opens the browser pane. Drops
-   the in-pane live view and the terminal code.
+   the in-pane live view, the terminal code and `prototypes/live-helper`.
 4. **Claude tools**: an `android` tool mirroring the iOS Simulator's actions; `screenshot` saves a
    PNG Claude reads back (whether a plugin tool result can carry an image block is unverified).
 5. **Emulator management**: list AVDs, boot with `-qt-hide-window -gpu host -grpc`, stop; an AVD

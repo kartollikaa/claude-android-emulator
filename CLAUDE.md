@@ -44,3 +44,17 @@ claude plugin test .
 
 and `tsc -p .` once the engine has laid the types. Every behaviour change gets a test in `tests/`
 run over both `terminal` and `desktop` surfaces.
+
+For the bridge:
+
+```bash
+go -C bridge vet ./...
+```
+
+```bash
+go -C bridge test -race ./...
+```
+
+`bridge/proto/emulator_controller.proto` is a pinned SDK copy: after replacing it, run
+`go -C bridge generate ./...` and commit the regenerated `bridge/internal/emulatorpb/`. The bridge
+serves this machine only: keep the loopback listener and the `Host` / `Origin` guard on every route.

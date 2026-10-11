@@ -54,16 +54,37 @@ claude plugin test ~/Projects/claude-android-emulator
 Once a session has loaded the mod from this folder, the engine writes the API types to
 `.claude-plugin/types/` (git-ignored), and `tsc -p .` type-checks the mod.
 
-## Prototypes: live desktop views
+## Live view
 
-`prototypes/live-helper` is a throwaway Node helper that reads the emulator's gRPC frame stream
-and forwards touches and keys back. It drives the live views being compared. It needs an emulator
-started with gRPC on and the host GPU (`-no-window` falls back to software rendering, which caps
-the frame rate):
+`bridge/` is the Android bridge: a small Go program that finds the running emulator, streams its
+screen to a page on `http://127.0.0.1:7357`, and sends your clicks, drags and keys back. Open that
+page in the desktop app's built-in browser pane for a live, touchable emulator.
+
+Start the emulator with gRPC on and the host GPU (`-no-window` falls back to software rendering,
+which caps the frame rate):
 
 ```bash
 emulator -avd Pixel_7 -qt-hide-window -gpu host -grpc 8554
 ```
+
+Run the bridge (needs Go; it waits for an emulator and reconnects when one restarts):
+
+```bash
+go -C bridge run ./cmd/android-bridge
+```
+
+Then ask Claude to open `http://127.0.0.1:7357` in the browser pane. Click to tap, drag to swipe,
+click the screen and type to send keys (Esc is Back), and use the Back / Home / Recents buttons.
+`-port`, `-stream-width` and `-v` (debug logs) are the bridge's flags.
+
+The page serves only this machine: the bridge listens on 127.0.0.1 and refuses requests whose
+`Host` or `Origin` is not its own, so no other web page can read the screen or drive the emulator.
+
+## Prototypes: live desktop views
+
+`prototypes/live-helper` is the throwaway Node helper the live views were compared with; the bridge
+replaces its live page, and the mod's in-pane live mode still reads its frames until the mod becomes
+a launcher. It takes the same port as the bridge, so run one at a time:
 
 ```bash
 npm --prefix prototypes/live-helper install
@@ -94,6 +115,8 @@ node prototypes/live-helper/server.mjs
 | `hooks/touch-surface.tsx` | Desktop `Client` surface module: streams pointer presses, drags and releases |
 | `hooks/touch-overlay.tsx` | Terminal `Client` surface module: turns pointer drags into gestures |
 | `hooks/adb.ts`, `hooks/live.ts` | Pure helpers: adb discovery, parsing, sizing, live frames |
+| `bridge/` | The Go bridge: emulator discovery, gRPC client, the live view page and its socket |
+| `bridge/proto/` | Pinned copy of the Android SDK's `emulator_controller.proto`; `go -C bridge generate ./...` regenerates `bridge/internal/emulatorpb/` |
 | `prototypes/live-helper/` | Throwaway Node helper for the desktop view prototypes |
 | `types/index.d.ts` | The `$.state` contract |
 | `tests/` | `claude plugin test` suites |
