@@ -29,12 +29,17 @@ type Fake struct {
 	AVD string
 	// Rotated makes screenshots landscape, as an emulator turned on its side answers.
 	Rotated bool
+	// PNG is what getScreenshot answers in the PNG format.
+	PNG []byte
 
 	server  *grpc.Server
 	streams chan chan *pb.Image
 
 	mu       sync.Mutex
 	isBooted bool
+	angles   []float32
+	turns    int
+	asked    []*pb.ImageFormat
 	vmStates []pb.VmRunState_RunState
 	touches  []*pb.Touch
 	keys     []*pb.KeyboardEvent
@@ -56,6 +61,7 @@ func Start(t *testing.T, width, height int, token string) *Fake {
 		Token:    token,
 		streams:  make(chan chan *pb.Image, 4),
 		isBooted: true,
+		angles:   []float32{0, 0, 0},
 	}
 	fake.server = grpc.NewServer(
 		grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
@@ -127,6 +133,12 @@ func (f *Fake) NextStream(t *testing.T, ctx context.Context) chan<- *pb.Image {
 	}
 }
 
+// Turned marks frame as drawn for a device turned to rotation.
+func Turned(frame *pb.Image, rotation pb.Rotation_SkinRotation) *pb.Image {
+	frame.Format.Rotation = &pb.Rotation{Rotation: rotation}
+	return frame
+}
+
 // Frame builds an RGB888 frame of a repeating byte pattern that starts at fill.
 func Frame(seq uint32, width, height int, fill byte) *pb.Image {
 	pixels := make([]byte, width*height*3)
@@ -184,7 +196,48 @@ func (f *Fake) GetScreenshot(context.Context, *pb.ImageFormat) (*pb.Image, error
 	if f.Rotated {
 		width, height = height, width
 	}
-	return &pb.Image{Format: &pb.ImageFormat{Format: pb.ImageFormat_PNG, Width: uint32(width), Height: uint32(height)}}, nil
+	return &pb.Image{Format: &pb.ImageFormat{Format: pb.ImageFormat_PNG, Width: uint32(width), Height: uint32(height)}, Image: f.PNG}, nil
+}
+
+// SetAngles sets the device's rotation sensor, [x, y, z] in degrees.
+func (f *Fake) SetAngles(angles ...float32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.angles = angles
+}
+
+// Angles returns the rotation sensor and how many times it was set.
+func (f *Fake) Angles() (angles []float32, turns int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]float32(nil), f.angles...), f.turns
+}
+
+func (f *Fake) GetPhysicalModel(_ context.Context, value *pb.PhysicalModelValue) (*pb.PhysicalModelValue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if value.GetTarget() != pb.PhysicalModelValue_ROTATION {
+		return nil, status.Error(codes.Unimplemented, "the fake models rotation only")
+	}
+	return &pb.PhysicalModelValue{Target: value.GetTarget(), Value: &pb.ParameterValue{Data: append([]float32(nil), f.angles...)}}, nil
+}
+
+func (f *Fake) SetPhysicalModel(_ context.Context, value *pb.PhysicalModelValue) (*emptypb.Empty, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if value.GetTarget() != pb.PhysicalModelValue_ROTATION {
+		return nil, status.Error(codes.Unimplemented, "the fake models rotation only")
+	}
+	f.angles = append([]float32(nil), value.GetValue().GetData()...)
+	f.turns++
+	return &emptypb.Empty{}, nil
+}
+
+// Asked returns the image formats the screenshot streams were opened with.
+func (f *Fake) Asked() []*pb.ImageFormat {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*pb.ImageFormat(nil), f.asked...)
 }
 
 // VmStates returns the VM states asked for so far.
@@ -205,7 +258,10 @@ func (f *Fake) SetVmState(_ context.Context, state *pb.VmRunState) (*emptypb.Emp
 	return &emptypb.Empty{}, nil
 }
 
-func (f *Fake) StreamScreenshot(_ *pb.ImageFormat, stream grpc.ServerStreamingServer[pb.Image]) error {
+func (f *Fake) StreamScreenshot(format *pb.ImageFormat, stream grpc.ServerStreamingServer[pb.Image]) error {
+	f.mu.Lock()
+	f.asked = append(f.asked, format)
+	f.mu.Unlock()
 	// Buffered, so a test sending into a stream that already ended fails on its read instead of hanging.
 	frames := make(chan *pb.Image, 16)
 	select {

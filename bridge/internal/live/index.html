@@ -51,7 +51,7 @@
   }
   .panel strong { color: var(--fg); font-weight: 600; font-size: 15px; }
   .panel [hidden] { display: none !important; }
-  body.offline canvas, body.offline nav { visibility: hidden; }
+  body.offline canvas, body.offline nav, body.offline .toolbar { visibility: hidden; }
   body.offline .panel { display: flex; }
   .progress { display: flex; flex-direction: column; align-items: center; gap: 8px; }
   .spinner {
@@ -75,19 +75,39 @@
   }
   .avds button:disabled { background: var(--line); color: var(--muted); cursor: default; }
   .avds button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-  nav { display: flex; gap: 8px; }
-  nav button {
+  nav, .toolbar { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  .toolbar .group { display: flex; gap: 4px; }
+  nav button, .toolbar button {
     width: 44px; height: 36px; display: grid; place-items: center; padding: 0;
     border: 1px solid var(--line); border-radius: 10px; background: var(--button); color: var(--fg); cursor: pointer;
   }
-  nav button:hover { background: var(--button-hover); }
-  nav button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
-  nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  nav button:hover, .toolbar button:hover { background: var(--button-hover); }
+  nav button:focus-visible, .toolbar button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  nav button:disabled, .toolbar button:disabled { opacity: 0.5; cursor: default; }
+  nav svg, .toolbar svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .toolbar .recording { width: auto; padding: 0 10px; gap: 6px; display: flex; background: var(--error); border-color: var(--error); color: var(--bg); font: inherit; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .toolbar .recording svg { fill: currentColor; stroke: none; }
+  .note { margin: 0; max-width: 100%; color: var(--muted); overflow-wrap: anywhere; text-align: center; }
+  .note.error { padding: 0; border: 0; color: var(--error); }
   nav .power { margin-left: 16px; }
   nav .power.confirming { width: auto; padding: 0 12px; background: var(--error); border-color: var(--error); color: var(--bg); font: inherit; font-weight: 600; }
 </style>
 </head>
 <body class="offline">
+  <div class="toolbar">
+    <div class="group">
+      <button id="rotate-left" aria-label="Rotate left" title="Rotate left"><svg viewBox="0 0 24 24"><path d="M4 9a8 8 0 1 1 1.6 8.5"/><path d="M4 4v5h5"/></svg></button>
+      <button id="rotate-right" aria-label="Rotate right" title="Rotate right"><svg viewBox="0 0 24 24"><path d="M20 9a8 8 0 1 0-1.6 8.5"/><path d="M20 4v5h-5"/></svg></button>
+    </div>
+    <div class="group">
+      <button id="screenshot" aria-label="Take a screenshot" title="Screenshot"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
+      <button id="record" aria-label="Record the screen" title="Record the screen"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg></button>
+    </div>
+    <div class="group">
+      <button id="app-info" aria-label="App info of the app in front" title="App info"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v6M12 7.5v.5"/></svg></button>
+      <button data-key="Power" aria-label="Power: turn the screen off or on" title="Power"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></svg></button>
+    </div>
+  </div>
   <div class="device">
     <canvas id="screen" width="540" height="1200" tabindex="0" aria-label="Android screen: click to tap, drag to swipe, type to send keys"></canvas>
     <div class="panel">
@@ -114,6 +134,7 @@
     <button data-key="AppSwitch" aria-label="Recents" title="Recents"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg></button>
     <button class="power" id="shutdown" aria-label="Shut down" title="Shut down"><svg viewBox="0 0 24 24"><path d="M12 4v7M7.5 7.2a7 7 0 1 0 9 0"/></svg></button>
   </nav>
+  <p class="note" id="note" hidden></p>
 <script>
   const canvas = document.getElementById('screen')
   const context = canvas.getContext('2d')
@@ -149,6 +170,9 @@
 
   function render(state) {
     lastState = state
+    showRecording(state)
+    if (state.saved && seenSaved !== undefined && state.saved !== seenSaved) note(`Saved ${state.saved}`)
+    seenSaved = state.saved || ''
     if (state.connected && state.booted) return show(null)
     if (state.connected) return show('progress', { title: `Booting ${label(state.avd || state.serial)}` })
     if (state.launch?.phase === 'starting') return show('progress', { title: `Starting ${label(state.launch.avd)}` })
@@ -265,6 +289,61 @@
     shutdown.classList.remove('confirming')
     shutdown.innerHTML = powerIcon
   }
+
+  // The toolbar: each control is one request; what it saved or why it failed shows in the note.
+  let seenSaved
+  let noteTimer = 0
+  function note(text, isError = false) {
+    clearTimeout(noteTimer)
+    const line = el('note')
+    line.textContent = text.charAt(0).toUpperCase() + text.slice(1)
+    line.classList.toggle('error', isError)
+    line.hidden = false
+    noteTimer = setTimeout(() => { line.hidden = true }, 8000)
+  }
+
+  async function control(path, body = {}) {
+    try {
+      const response = await fetch(path, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })
+      if (!response.ok) note((await response.text()).trim() || `${path} failed`, true)
+      return response.ok
+    } catch (error) {
+      note(`Cannot reach the bridge: ${error}`, true)
+      return false
+    }
+  }
+
+  async function busy(button, act) {
+    button.disabled = true
+    try { await act() } finally { button.disabled = false }
+  }
+
+  el('rotate-left').addEventListener('click', () => control('/rotate', { direction: 'left' }))
+  el('rotate-right').addEventListener('click', () => control('/rotate', { direction: 'right' }))
+  el('screenshot').addEventListener('click', event => busy(event.currentTarget, () => control('/screenshot')))
+  el('app-info').addEventListener('click', event => busy(event.currentTarget, () => control('/app-settings')))
+
+  const record = el('record')
+  const recordIcon = record.innerHTML
+  let recordingSince = 0
+  record.addEventListener('click', () => busy(record, () => control(recordingSince ? '/recording/stop' : '/recording/start')))
+  function showRecording(state) {
+    recordingSince = state.recordingSince ? Date.parse(state.recordingSince) : 0
+    record.classList.toggle('recording', recordingSince > 0)
+    record.title = recordingSince ? 'Stop recording' : 'Record the screen'
+    tickRecording()
+  }
+  function tickRecording() {
+    if (!recordingSince) {
+      if (record.innerHTML !== recordIcon) record.innerHTML = recordIcon
+      return
+    }
+    const seconds = Math.max(0, Math.floor((Date.now() - recordingSince) / 1000))
+    record.innerHTML = `<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+  }
+  setInterval(tickRecording, 1000)
 
   function draw(header, rgb) {
     const width = header.getUint32(0, true)

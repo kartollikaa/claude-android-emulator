@@ -62,6 +62,7 @@ func startBridge(t *testing.T, options ...func(*Config)) *harness {
 		SDKCandidates: []string{filepath.Join(dir, "no-sdk")},
 		AVDHome:       t.TempDir(),
 		LogDir:        t.TempDir(),
+		CapturesDir:   t.TempDir(),
 	}
 	for _, option := range options {
 		option(&config)

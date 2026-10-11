@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -29,12 +31,37 @@ type Size struct {
 	Height int `json:"height"`
 }
 
-// Frame is one screen image: RGB888, rows top-down; 0×0 means the display is off.
+// Frame is one screen image: RGB888, rows top-down, drawn upright for the device's rotation; 0×0 means the display is off.
 type Frame struct {
-	Seq    uint32
-	Width  int
-	Height int
-	RGB    []byte
+	Seq      uint32
+	Width    int
+	Height   int
+	Rotation Rotation
+	RGB      []byte
+}
+
+// Rotation is how far the device is turned counter-clockwise from its natural portrait, in quarter turns.
+type Rotation int32
+
+const (
+	Portrait Rotation = iota
+	Landscape
+	ReversePortrait
+	ReverseLandscape
+)
+
+var rotationNames = [...]string{"portrait", "landscape", "reverse-portrait", "reverse-landscape"}
+
+func (r Rotation) MarshalText() ([]byte, error) { return []byte(rotationNames[r&3]), nil }
+
+func (r *Rotation) UnmarshalText(text []byte) error {
+	index := slices.Index(rotationNames[:], string(text))
+	if index < 0 {
+		return fmt.Errorf("unknown rotation %q", text)
+	}
+	*r = Rotation(index)
+
+	return nil
 }
 
 type Conn struct {
@@ -43,6 +70,8 @@ type Conn struct {
 	conn     *grpc.ClientConn
 	client   pb.EmulatorControllerClient
 	logger   *slog.Logger
+	// The rotation of the newest frame; touches arrive in its coordinates.
+	rotation atomic.Int32
 }
 
 type bearerToken string
@@ -102,11 +131,12 @@ func panelSize(emulatorStatus *pb.EmulatorStatus) Size {
 	return Size{Width: width, Height: height}
 }
 
-// StreamSize is the size frames arrive at when streamed at width, keeping the screen's aspect.
-func (c *Conn) StreamSize(width int) Size {
-	width = min(width, c.Device.Width)
+// StreamBox is the square that frames streamed with a short side of width fit in, upright or on their side.
+func (c *Conn) StreamBox(width int) Size {
+	short, long := min(c.Device.Width, c.Device.Height), max(c.Device.Width, c.Device.Height)
+	side := int(math.Round(float64(min(width, short)) * float64(long) / float64(short)))
 
-	return Size{Width: width, Height: int(math.Round(float64(width) * float64(c.Device.Height) / float64(c.Device.Width)))}
+	return Size{Width: side, Height: side}
 }
 
 // Stream calls onFrame for each new screen image until ctx ends or the emulator goes away.
@@ -133,23 +163,70 @@ func (c *Conn) Stream(ctx context.Context, size Size, onFrame func(Frame)) error
 			}
 			continue
 		}
-		onFrame(Frame{Seq: image.GetSeq(), Width: width, Height: height, RGB: image.GetImage()})
+		rotation := Rotation(image.GetFormat().GetRotation().GetRotation())
+		if width > 0 && height > 0 {
+			c.rotation.Store(int32(rotation))
+		}
+		onFrame(Frame{Seq: image.GetSeq(), Width: width, Height: height, Rotation: rotation, RGB: image.GetImage()})
 	}
 }
 
-// Touch presses (isDown) or releases one finger at a point given as fractions of the screen.
+// Touch presses (isDown) or releases one finger at a point given as fractions of the screen as the newest frame shows it.
 func (c *Conn) Touch(ctx context.Context, x, y float64, isDown bool) error {
 	pressure := int32(0)
 	if isDown {
 		pressure = 1
 	}
+	panelX, panelY := Rotation(c.rotation.Load()).toPanel(x, y)
 	_, err := c.client.SendTouch(ctx, &pb.TouchEvent{Touches: []*pb.Touch{{
-		X:        toPixel(x, c.Device.Width),
-		Y:        toPixel(y, c.Device.Height),
+		X:        toPixel(panelX, c.Device.Width),
+		Y:        toPixel(panelY, c.Device.Height),
 		Pressure: pressure,
 	}}})
 
 	return err
+}
+
+// toPanel turns fractions of the upright picture into fractions of the natural panel, which the touchscreen reports in.
+func (r Rotation) toPanel(x, y float64) (float64, float64) {
+	switch r & 3 {
+	case Landscape:
+		return 1 - y, x
+	case ReversePortrait:
+		return 1 - x, 1 - y
+	case ReverseLandscape:
+		return y, 1 - x
+	}
+
+	return x, y
+}
+
+// Rotate turns the device quarters of a turn, counter-clockwise for a positive count, keeping its tilt.
+func (c *Conn) Rotate(ctx context.Context, quarters int) error {
+	current, err := c.client.GetPhysicalModel(ctx, &pb.PhysicalModelValue{Target: pb.PhysicalModelValue_ROTATION})
+	if err != nil {
+		return err
+	}
+	angles := append(current.GetValue().GetData(), 0, 0, 0)[:3]
+	z := math.Round(float64(angles[2])/90)*90 + float64(90*quarters)
+	angles[2] = float32(math.Mod(math.Mod(z+180, 360)+360, 360) - 180)
+	_, err = c.client.SetPhysicalModel(ctx, &pb.PhysicalModelValue{
+		Target:        pb.PhysicalModelValue_ROTATION,
+		Value:         &pb.ParameterValue{Data: angles},
+		Interpolation: pb.PhysicalModelValue_STEP,
+	})
+
+	return err
+}
+
+// Screenshot returns the screen as the emulator encodes it: a PNG at the device's full resolution.
+func (c *Conn) Screenshot(ctx context.Context) ([]byte, error) {
+	image, err := c.client.GetScreenshot(ctx, &pb.ImageFormat{Format: pb.ImageFormat_PNG})
+	if err != nil {
+		return nil, err
+	}
+
+	return image.GetImage(), nil
 }
 
 // Key presses and releases a named key (GoHome, GoBack, AppSwitch, Enter, Backspace, ...).

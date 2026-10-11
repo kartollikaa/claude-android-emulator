@@ -94,6 +94,14 @@ func (s SDK) Emulator() string {
 	return filepath.Join(s.Root, "emulator", "emulator")
 }
 
+// ADB is the path of adb in the SDK's platform-tools.
+func (s SDK) ADB() string {
+	if s.goos == "windows" {
+		return filepath.Join(s.Root, "platform-tools", "adb.exe")
+	}
+	return filepath.Join(s.Root, "platform-tools", "adb")
+}
+
 // AVDHome is where AVDs keep their .ini files.
 func AVDHome(getenv func(string) string, home string) string {
 	if dir := getenv("ANDROID_AVD_HOME"); dir != "" {

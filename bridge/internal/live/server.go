@@ -35,7 +35,7 @@ func Listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 }
 
-// Handler serves the live view (/), its socket (/live), /status, /input, /avds, /emulators/start and /shutdown.
+// Handler serves the live view (/), its socket (/live), /status, /input, the AVDs and their start, and the toolbar's controls.
 func (b *Bridge) Handler() http.Handler {
 	routes := http.NewServeMux()
 	routes.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
@@ -55,6 +55,11 @@ func (b *Bridge) Handler() http.Handler {
 	routes.HandleFunc("GET /avds", b.serveAVDs)
 	routes.HandleFunc("POST /emulators/start", b.serveStart)
 	routes.HandleFunc("POST /shutdown", b.serveShutdown)
+	routes.HandleFunc("POST /rotate", b.serveRotate)
+	routes.HandleFunc("POST /screenshot", b.serveCapture(b.Screenshot, inputTimeout))
+	routes.HandleFunc("POST /recording/start", b.serveControl(b.StartRecording))
+	routes.HandleFunc("POST /recording/stop", b.serveCapture(b.StopRecording, recordingSaveTimeout))
+	routes.HandleFunc("POST /app-settings", b.serveControl(b.OpenAppSettings))
 
 	return guardLocal(routes)
 }
@@ -183,6 +188,72 @@ func (b *Bridge) serveShutdown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (b *Bridge) serveRotate(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Direction string `json:"direction"`
+	}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), inputTimeout)
+	defer cancel()
+	if err := b.Rotate(ctx, request.Direction); err != nil {
+		http.Error(w, err.Error(), controlErrorStatus(err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// serveControl answers a body-less JSON request with act's outcome.
+func (b *Bridge) serveControl(act func(context.Context) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request struct{}
+		if !readJSON(w, r, &request) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), sdkTimeout)
+		defer cancel()
+		if err := act(ctx); err != nil {
+			http.Error(w, err.Error(), controlErrorStatus(err))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// serveCapture answers a body-less JSON request with the path of the file capture saved.
+func (b *Bridge) serveCapture(capture func(context.Context) (string, error), timeout time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request struct{}
+		if !readJSON(w, r, &request) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		path, err := capture(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), controlErrorStatus(err))
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"path": path})
+	}
+}
+
+func controlErrorStatus(err error) int {
+	var noSDK *sdk.NotFoundError
+	switch {
+	case errors.Is(err, ErrBadInput):
+		return http.StatusBadRequest
+	case errors.Is(err, ErrNoEmulator), errors.Is(err, ErrNoADB), errors.As(err, &noSDK):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, ErrRecording), errors.Is(err, ErrNotRecording), errors.Is(err, ErrHomeInFront):
+		return http.StatusConflict
+	}
+
+	return http.StatusBadGateway
 }
 
 func sdkErrorStatus(err error) int {
