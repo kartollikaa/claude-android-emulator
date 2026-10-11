@@ -35,7 +35,7 @@ func Listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 }
 
-// Handler serves the live view (/), its socket (/live), /status, /input, the AVDs and their start, and the toolbar's controls.
+// Handler serves the live view (/), its socket (/live), /status, /input, the AVDs and their start, the toolbar and the settings.
 func (b *Bridge) Handler() http.Handler {
 	routes := http.NewServeMux()
 	routes.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
@@ -62,6 +62,22 @@ func (b *Bridge) Handler() http.Handler {
 	routes.HandleFunc("POST /recording/start", serveAction(sdkTimeout, answeringNothing(b.StartRecording)))
 	routes.HandleFunc("POST /recording/stop", serveAction(recordingStopTimeout, answeringPath(b.StopRecording)))
 	routes.HandleFunc("POST /app-settings", serveAction(sdkTimeout, answeringNothing(b.OpenAppSettings)))
+	routes.HandleFunc("GET /settings", serveRead(sdkTimeout, b.ReadSettings))
+	routes.HandleFunc("GET /settings/locales", serveRead(sdkTimeout, func(ctx context.Context) (any, error) {
+		locales, err := b.DeviceLocales(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string][]string{"locales": locales}, nil
+	}))
+	routes.HandleFunc("POST /settings", serveAction(sdkTimeout, func(ctx context.Context, change SettingsChange) (any, error) {
+		settings, err := b.ChangeSettings(ctx, change)
+		return settings, err
+	}))
+	routes.HandleFunc("POST /settings/reset", serveAction(sdkTimeout, func(ctx context.Context, _ struct{}) (any, error) {
+		settings, err := b.ResetSettings(ctx)
+		return settings, err
+	}))
 
 	return guardLocal(routes)
 }
@@ -206,17 +222,32 @@ func serveAction[Request any](timeout time.Duration, act func(context.Context, R
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 		answer, err := act(ctx, request)
-		if err != nil {
-			http.Error(w, err.Error(), controlErrorStatus(err))
-			return
-		}
-		if answer == nil {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		w.Header().Set("content-type", "application/json")
-		json.NewEncoder(w).Encode(answer)
+		writeAnswer(w, answer, err)
 	}
+}
+
+// serveRead answers a GET with what read returns, as JSON.
+func serveRead[Answer any](timeout time.Duration, read func(context.Context) (Answer, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		answer, err := read(ctx)
+		writeAnswer(w, answer, err)
+	}
+}
+
+// writeAnswer writes err with its status, 204 for a nil answer, or the answer as JSON.
+func writeAnswer(w http.ResponseWriter, answer any, err error) {
+	if err != nil {
+		http.Error(w, err.Error(), controlErrorStatus(err))
+		return
+	}
+	if answer == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("content-type", "application/json")
+	json.NewEncoder(w).Encode(answer)
 }
 
 func answeringNothing(act func(context.Context) error) func(context.Context, struct{}) (any, error) {
@@ -241,6 +272,8 @@ func controlErrorStatus(err error) int {
 		return http.StatusServiceUnavailable
 	case errors.Is(err, ErrRecording), errors.Is(err, ErrNotRecording), errors.Is(err, ErrHomeInFront):
 		return http.StatusConflict
+	case errors.Is(err, ErrLocaleUnavailable):
+		return http.StatusNotImplemented
 	}
 
 	return http.StatusBadGateway

@@ -52,6 +52,7 @@
   .panel strong { color: var(--fg); font-weight: 600; font-size: 15px; }
   .panel [hidden] { display: none !important; }
   body.offline canvas, body.offline nav, body.offline .toolbar { visibility: hidden; }
+  body.offline .settings { display: none; }
   body.offline .panel { display: flex; }
   .progress { display: flex; flex-direction: column; align-items: center; gap: 8px; }
   .spinner {
@@ -87,6 +88,23 @@
   nav svg, .toolbar svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
   .toolbar .recording { width: auto; padding: 0 10px; gap: 6px; display: flex; background: var(--error); border-color: var(--error); color: var(--bg); font: inherit; font-weight: 600; font-variant-numeric: tabular-nums; }
   .toolbar .recording svg { fill: currentColor; stroke: none; }
+  .toolbar button[aria-expanded="true"] { background: var(--button-hover); border-color: var(--muted); }
+  .settings {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 16px; max-width: 100%;
+    padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--button);
+  }
+  .settings[hidden] { display: none; }
+  .settings label { display: flex; align-items: center; gap: 6px; }
+  .settings select, .settings button {
+    max-width: 220px; padding: 4px 8px; font: inherit; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  .settings button { cursor: pointer; }
+  .settings button:hover { background: var(--button-hover); }
+  .settings input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+  .settings :disabled { opacity: 0.6; cursor: default; }
+  .settings.busy, .settings.busy * { cursor: progress; }
+  .settings :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
   .note { margin: 0; max-width: 100%; color: var(--muted); overflow-wrap: anywhere; text-align: center; }
   .note.error { padding: 0; border: 0; color: var(--error); }
   nav .power { margin-left: 16px; }
@@ -107,7 +125,17 @@
       <button id="app-info" aria-label="App info of the app in front" title="App info"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v6M12 7.5v.5"/></svg></button>
       <button data-key="Power" aria-label="Power: turn the screen off or on" title="Power"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></svg></button>
     </div>
+    <div class="group">
+      <button id="settings" aria-label="Device settings" title="Device settings" aria-expanded="false" aria-controls="settings-panel"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
+    </div>
   </div>
+  <section class="settings" id="settings-panel" aria-label="Device settings" hidden>
+    <label><input type="checkbox" id="dark-theme"> Dark theme</label>
+    <label>Font size <select id="font-scale"></select></label>
+    <label>Display size <select id="density"></select></label>
+    <label>Language <select id="locale"></select></label>
+    <button id="reset-settings" title="Light theme, default font and display size; the language stays">Reset</button>
+  </section>
   <div class="device">
     <canvas id="screen" width="540" height="1200" tabindex="0" aria-label="Android screen: click to tap, drag to swipe, type to send keys"></canvas>
     <div class="panel">
@@ -173,7 +201,14 @@
     showRecording(state)
     if (state.saved && seenSaved !== undefined && state.saved !== seenSaved) note(`Saved ${state.saved}`)
     seenSaved = state.saved || ''
-    if (state.connected && state.booted) return show(null)
+    if (state.connected && state.booted) {
+      // The emulator may be another one now, with other settings and languages.
+      if (shown !== null) {
+        localeNames = null
+        if (!settingsPanel.hidden) loadSettings()
+      }
+      return show(null)
+    }
     if (state.connected) return show('progress', { title: `Booting ${label(state.avd || state.serial)}` })
     if (state.launch?.phase === 'starting') return show('progress', { title: `Starting ${label(state.launch.avd)}` })
     show('picker', { error: state.launch?.phase === 'failed' ? state.launch.error : '' })
@@ -346,6 +381,119 @@
     record.innerHTML = `<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
   }
   setInterval(tickRecording, 1000)
+
+  // Device settings: the panel shows what the device reports, and every change answers with the settings read back.
+  const settingsButton = el('settings')
+  const settingsPanel = el('settings-panel')
+  let settings = null
+  let localeNames = null
+
+  settingsButton.addEventListener('click', () => {
+    const opening = settingsPanel.hidden
+    settingsPanel.hidden = !opening
+    settingsButton.setAttribute('aria-expanded', String(opening))
+    if (opening) loadSettings()
+  })
+  el('dark-theme').addEventListener('change', event => changeSettings('/settings', { darkTheme: event.target.checked }))
+  el('font-scale').addEventListener('change', event => changeSettings('/settings', { fontScale: Number(event.target.value) }))
+  el('density').addEventListener('change', event => {
+    const density = Number(event.target.value)
+    changeSettings('/settings', { density: density === settings.physicalDensity ? 0 : density })
+  })
+  el('locale').addEventListener('change', event => changeSettings('/settings', { locale: event.target.value }))
+  el('reset-settings').addEventListener('click', () => changeSettings('/settings/reset', {}))
+
+  async function loadSettings() {
+    await settingsRequest(() => fetch('/settings'))
+    if (!localeNames && settings?.locale) loadLocales()
+  }
+
+  async function changeSettings(path, change) {
+    const changed = await settingsRequest(() => fetch(path, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(change),
+    }))
+    if (!changed) await settingsRequest(() => fetch('/settings'))
+  }
+
+  // Requests run one at a time and only the newest answer is drawn, so a burst of changes does not fight the user.
+  let settingsQueue = Promise.resolve()
+  let newestSettingsRequest = 0
+  function settingsRequest(request) {
+    const id = ++newestSettingsRequest
+    settingsQueue = settingsQueue.then(async () => {
+      settingsPanel.classList.add('busy')
+      try {
+        const response = await request()
+        if (!response.ok) {
+          note((await response.text()).trim() || 'The device settings are unavailable', true)
+          return false
+        }
+        const answer = await response.json()
+        if (id === newestSettingsRequest) showSettings(answer)
+        return true
+      } catch (error) {
+        note(`Cannot reach the bridge: ${error}`, true)
+        return false
+      } finally {
+        if (id === newestSettingsRequest) settingsPanel.classList.remove('busy')
+      }
+    })
+    return settingsQueue
+  }
+
+  function showSettings(answer) {
+    settings = answer
+    el('dark-theme').checked = settings.darkTheme
+    showChoices(el('font-scale'), settings.fontScaleSteps, settings.fontScale, scale => `${Math.round(scale * 100)}%${scale === 1 ? ' (default)' : ''}`)
+    showChoices(el('density'), settings.densitySteps, settings.density, densityLabel)
+    showLocales()
+  }
+
+  // A value set elsewhere that is not one of Android's steps shows as Custom.
+  function showChoices(select, steps, current, label) {
+    const values = steps.includes(current) ? steps : [...steps, current].sort((a, b) => a - b)
+    select.replaceChildren(...values.map(value => new Option(steps.includes(value) ? label(value) : `Custom: ${label(value)}`, String(value))))
+    select.value = String(current)
+  }
+
+  function densityLabel(density) {
+    const index = settings.densitySteps.indexOf(density)
+    const base = settings.densitySteps.indexOf(settings.physicalDensity)
+    if (index < 0 || base < 0) return `${density} dpi`
+    const name = index < base ? 'Small' : index === base ? 'Default' : ['Large', 'Larger', 'Largest'][index - base - 1]
+    return `${name}, ${density} dpi`
+  }
+
+  async function loadLocales() {
+    try {
+      const response = await fetch('/settings/locales')
+      if (!response.ok) return
+      const { locales } = await response.json()
+      const names = new Intl.DisplayNames([navigator.language], { type: 'language' })
+      // A tag with a -u- extension (a numbering system) is named after its language and told apart by the tag.
+      const nameOf = tag => { try { return names.of(tag.split('-u-')[0]) || tag } catch { return tag } }
+      const counts = {}
+      for (const tag of locales) counts[nameOf(tag)] = (counts[nameOf(tag)] || 0) + 1
+      localeNames = new Map(locales
+        .map(tag => [tag, counts[nameOf(tag)] > 1 ? `${nameOf(tag)} · ${tag}` : nameOf(tag)])
+        .sort((a, b) => a[1].localeCompare(b[1])))
+      showLocales()
+    } catch {}
+  }
+
+  function showLocales() {
+    const select = el('locale')
+    if (!settings.locale) {
+      select.replaceChildren(new Option('Not available on this Android version', ''))
+      select.disabled = true
+      return
+    }
+    select.disabled = false
+    const names = localeNames || new Map()
+    const entries = names.has(settings.locale) ? [...names] : [[settings.locale, settings.locale], ...names]
+    select.replaceChildren(...entries.map(([tag, name]) => new Option(name, tag)))
+    select.value = settings.locale
+  }
 
   function draw(header, rgb) {
     const width = header.getUint32(0, true)
