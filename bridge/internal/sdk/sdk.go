@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/ini"
 )
@@ -35,6 +36,9 @@ type NotFoundError struct{ Looked []string }
 func (e *NotFoundError) Error() string {
 	return "no Android SDK with an emulator in " + strings.Join(e.Looked, ", ")
 }
+
+// The emulator itself waits 20 s for the guest to shut down before it kills it.
+const stopGrace = 30 * time.Second
 
 var (
 	avdName  = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]*$`)
@@ -161,11 +165,13 @@ func (s SDK) Boot(avd string, grpcPort int, logPath string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-// Stop asks a booted emulator to shut down, killing it where it cannot be asked.
+// Stop asks a booted emulator to shut down and kills it if it is still there after stopGrace.
 func Stop(cmd *exec.Cmd) {
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		cmd.Process.Kill()
+		return
 	}
+	time.AfterFunc(stopGrace, func() { cmd.Process.Kill() })
 }
 
 // LastError picks the line of an emulator log that explains a failed boot.

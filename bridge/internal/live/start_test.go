@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -207,6 +208,15 @@ func TestLaunchedEmulatorIsDetached(t *testing.T) {
 		data, _ := os.ReadFile(logPath)
 		return strings.Contains(string(data), "emulator booting")
 	}, "the emulator's output landing in "+logPath)
+	wantOutput, _ := filepath.EvalSymlinks(logPath)
+	if kind, name := standardOutput(t, pid); kind != "REG" || name != wantOutput {
+		t.Errorf("the emulator's standard output is %s %s, want the regular file %s", kind, name, logPath)
+	}
+	h.stop()
+	time.Sleep(200 * time.Millisecond)
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Errorf("the emulator did not outlive the bridge: %v", err)
+	}
 	if defaultDir := New(Config{}).config.LogDir; defaultDir != filepath.Join(os.TempDir(), "claude-android-emulator") {
 		t.Errorf("default log dir = %s, want $TMPDIR/claude-android-emulator", defaultDir)
 	}
@@ -259,26 +269,38 @@ func TestStartRefusesWhatItCannotLaunch(t *testing.T) {
 	}
 }
 
-const failingTwice = listingScript + `
-if [ -f "$d/failed-once" ]; then
+// Each boot fails with the next log: ERROR then FATAL, two ERRORs, then neither.
+const failingThrice = listingScript + `
+attempt=$(cat "$d/attempts" 2>/dev/null || echo 0)
+echo $((attempt + 1)) > "$d/attempts"
+case $attempt in
+0)
+  echo "INFO    | Android emulator version 36.6.11.0"
+  echo "ERROR   | first problem"
+  echo "FATAL   | x86_64 emulation currently requires hardware acceleration"
+  echo "INFO    | shutting down"
+  ;;
+1)
+  echo "ERROR   | one"
+  echo "ERROR   | two"
+  echo "INFO    | shutting down"
+  ;;
+*)
   echo "INFO    | starting again"
   echo "plain last line"
   echo
-  exit 1
-fi
-touch "$d/failed-once"
-echo "INFO    | Android emulator version 36.6.11.0"
-echo "ERROR   | x86_64 emulation currently requires hardware acceleration"
-echo "INFO    | shutting down"
+  ;;
+esac
 exit 1
 `
 
 func TestFailedLaunchIsReported(t *testing.T) {
-	root := fakeSDK(t, failingTwice)
+	root := fakeSDK(t, failingThrice)
 	h := startBridge(t, withSDK(root))
 
 	for _, wantError := range []string{
-		"ERROR   | x86_64 emulation currently requires hardware acceleration",
+		"FATAL   | x86_64 emulation currently requires hardware acceleration",
+		"ERROR   | two",
 		"plain last line",
 	} {
 		if status := start(t, h, "Pixel_7"); status != http.StatusAccepted {
@@ -313,6 +335,28 @@ func TestBootProgress(t *testing.T) {
 	}
 	fake.SetBooted(true)
 	eventuallyWithin(t, 2*time.Second, func() bool { return h.status(t).Booted }, "booted once the emulator reports it")
+}
+
+// standardOutput reads what fd 1 of pid is, as lsof names it: its type (REG, PIPE) and path.
+func standardOutput(t *testing.T, pid int) (kind, name string) {
+	t.Helper()
+	output, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "1", "-F", "tn").Output()
+	if err != nil {
+		t.Fatalf("lsof: %v", err)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.HasPrefix(line, "t") {
+			kind = line[1:]
+		}
+		if strings.HasPrefix(line, "n") {
+			name = line[1:]
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(name)
+	if err == nil {
+		name = resolved
+	}
+	return kind, name
 }
 
 // ownDiscoveryFile names a discovery file after this test's own pid, which is alive.

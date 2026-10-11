@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ type harness struct {
 	dir    string
 	server *httptest.Server
 	bridge *Bridge
+	stop   func()
 }
 
 func startBridge(t *testing.T, options ...func(*Config)) *harness {
@@ -61,12 +63,13 @@ func startBridge(t *testing.T, options ...func(*Config)) *harness {
 	ctx, cancel := context.WithCancel(context.Background())
 	go bridge.Run(ctx)
 	server := httptest.NewServer(bridge.Handler())
-	t.Cleanup(func() {
+	stop := sync.OnceFunc(func() {
 		server.Close()
 		cancel()
 	})
+	t.Cleanup(stop)
 
-	return &harness{dir: dir, server: server, bridge: bridge}
+	return &harness{dir: dir, server: server, bridge: bridge, stop: stop}
 }
 
 func testContext(t *testing.T) context.Context {
