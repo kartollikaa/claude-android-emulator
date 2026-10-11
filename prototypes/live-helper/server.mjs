@@ -16,6 +16,8 @@ const SDK = process.env.ANDROID_HOME ?? path.join(os.homedir(), 'Library/Android
 const DISCOVERY = path.join(os.homedir(), 'Library/Caches/TemporaryItems/avd/running')
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const TOUCH_PRESSURE = 1
+const FILE_SLOTS = 8
+const FILE_DIRECTORY = path.join(os.tmpdir(), 'claude-android-emulator', 'live')
 const TAP_MAX_TRAVEL = 0.02
 const TAP_MAX_MS = 300
 
@@ -62,6 +64,8 @@ console.log(`emulator ${emulator.serial} on grpc :${emulator.port}, screen ${dev
 let latest = null
 let framesSinceReport = 0
 const sockets = new Set()
+const mjpegClients = new Set()
+const BOUNDARY = 'androidframe'
 
 function framePacket(frame) {
   const header = Buffer.alloc(12)
@@ -76,6 +80,7 @@ function startStream() {
   frames.on('data', image => {
     latest = { seq: image.seq, width: image.format.width, height: image.format.height, rgb: image.image, jpeg: null }
     framesSinceReport += 1
+    if (mjpegClients.size > 0) pushMjpeg(latest)
     if (sockets.size === 0) return
     const packet = framePacket(latest)
     for (const socket of sockets) if (socket.bufferedAmount < 8 * 1024 * 1024) socket.send(packet)
@@ -110,6 +115,26 @@ function paneJpeg(frame) {
   }
   frame.jpeg = { width, height, base64: jpeg.encode({ data: rgba, width, height }, 60).data.toString('base64') }
   return frame.jpeg
+}
+
+function frameFile(frame) {
+  if (frame.file) return frame.file
+  fs.mkdirSync(FILE_DIRECTORY, { recursive: true })
+  const file = path.join(FILE_DIRECTORY, `slot-${frame.seq % FILE_SLOTS}.rgb`)
+  fs.writeFileSync(file, frame.rgb)
+  frame.file = file
+  return file
+}
+
+function pushMjpeg(frame) {
+  const { base64 } = paneJpeg(frame)
+  const body = Buffer.from(base64, 'base64')
+  const part = Buffer.concat([
+    Buffer.from(`Content-Type: image/jpeg\r\nContent-Length: ${body.length}\r\n\r\n`),
+    body,
+    Buffer.from(`\r\n--${BOUNDARY}\r\n`),
+  ])
+  for (const client of mjpegClients) if (client.writableLength < 4 * 1024 * 1024) client.write(part)
 }
 
 const toDevice = ({ x, y }) => ({
@@ -164,6 +189,32 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/') {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       response.end(fs.readFileSync(path.join(HERE, 'public/index.html')))
+    } else if (request.method === 'GET' && url.pathname === '/stream.mjpeg') {
+      console.log(`mjpeg stream opened: v=${url.searchParams.get('v')} ua=${request.headers['user-agent']}`)
+      response.writeHead(200, {
+        'content-type': `multipart/x-mixed-replace; boundary=${BOUNDARY}`,
+        'cache-control': 'no-store',
+        'access-control-allow-origin': '*',
+      })
+      response.write(`--${BOUNDARY}\r\n`)
+      mjpegClients.add(response)
+      if (latest !== null) pushMjpeg(latest)
+      request.on('close', () => {
+        mjpegClients.delete(response)
+        console.log(`mjpeg stream closed: v=${url.searchParams.get('v')}`)
+      })
+    } else if (request.method === 'GET' && url.pathname === '/frame.jpg') {
+      console.log(`jpeg requested: v=${url.searchParams.get('v')} ua=${request.headers['user-agent']}`)
+      response.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'access-control-allow-origin': '*' })
+      response.end(latest === null ? Buffer.alloc(0) : Buffer.from(paneJpeg(latest).base64, 'base64'))
+    } else if (request.method === 'GET' && url.pathname === '/frame-file') {
+      const after = Number(url.searchParams.get('after') ?? -1)
+      response.writeHead(200, { 'content-type': 'application/json' })
+      if (latest === null || latest.seq === after) {
+        response.end(JSON.stringify({ seq: latest?.seq ?? -1 }))
+      } else {
+        response.end(JSON.stringify({ seq: latest.seq, width: latest.width, height: latest.height, path: frameFile(latest) }))
+      }
     } else if (request.method === 'GET' && url.pathname === '/frame') {
       const after = Number(url.searchParams.get('after') ?? -1)
       response.writeHead(200, { 'content-type': 'application/json' })

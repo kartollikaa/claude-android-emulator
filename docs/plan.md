@@ -138,8 +138,8 @@ One PR per item, each reviewed before the next starts.
 - **Desktop first.** The desktop app's Code tab comes before the terminal pane.
 - **Bridge language: Go** — first-class gRPC, one static binary per platform, easy
   cross-compilation; FFmpeg is spawned for device decoding at first.
-- **Desktop view: pending** the comparison of the two prototypes (option A, browser pane;
-  option B, live mod pane) — see the README's Prototypes section.
+- **A dedicated pane, like the iOS Simulator's, on the desktop and in the terminal** — not the
+  browser pane. The desktop frame path is pending the stream test.
 
 ## Open decisions (owner)
 
@@ -156,6 +156,8 @@ One PR per item, each reviewed before the next starts.
 | Skeleton capture pipeline | Works end to end against a headless emulator outside the UI (devices → `screencap` → PNG → JPEG). `screencap` delivers a couple of frames per second at best, PNG or raw: a live view needs the bridge |
 | Desktop frame size | A 720 px JPEG of the phone screen takes about a quarter of the `Svg` source cap: room for a sharper desktop frame |
 | gRPC stream and input (prototype helper) | `streamScreenshot` RGB888 at reduced size works with no token; rows arrive top-down, despite the proto's "bottom up" note. `sendTouch` taps and swipes and `sendKey` `GoHome`/`GoBack`/`AppSwitch` all act on the emulator |
-| Option A: browser-pane live view | Works in the desktop app's built-in browser pane: live frames, drag to swipe, nav keys. Frames peak well under 60 fps during animations on a headless emulator; the software GPU of `-no-window` and the stream size are the first suspects |
-| Option B: live mod pane | Built and covered by tests (JPEG-in-`Svg` frames, `Client` touch overlay); not yet seen on the real desktop surface |
+| Option A: browser-pane live view | Works in the desktop app's built-in browser pane: live frames, drag to swipe, nav keys. Rejected by the owner: it reads as a browser, not a dedicated pane |
+| Emulator frame rate | `-no-window` selects software rendering (`swangle` / `lavapipe`) and caps the gRPC stream far below the display rate. `-qt-hide-window -gpu host` (how Android Studio launches it) renders on the host GPU and roughly triples the stream rate under continuous swipes, at either stream size. Always launch that way |
+| MJPEG in Chromium | A plain `<img>` plays the helper's MJPEG stream in the app's Chromium; each part must end with the boundary or the frame never shows |
+| Option B: live mod pane | Owner reports 0–2 fps on the desktop: every frame is a state write, a re-render and a new `Svg` image. The emulator and the helper's JPEG encoding are not the bottleneck. Next: the stream test, to find an embedding the desktop plays natively |
 | Ghostty `Image`, `Client` over `Image` | Not yet run (terminal comes after desktop) |

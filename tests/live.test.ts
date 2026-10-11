@@ -19,11 +19,15 @@ const PANE = {
 } as const
 
 const FRAME = { seq: 7, width: 360, height: 800, base64: 'QUJD' }
+const FILE_FRAME = { seq: 9, width: 540, height: 1200, path: '/tmp/claude-android-emulator/live/slot-1.rgb' }
 
 function fakeHelper(on: On, posted: unknown[], isUp = true) {
   on('http.fetch', ($, e) => {
     if (!isUp) {
       return { deny: 'connection refused' }
+    }
+    if (e.url.includes('/frame-file')) {
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(FILE_FRAME) } }
     }
     if (e.url.includes('/frame')) {
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(FRAME) } }
@@ -101,6 +105,39 @@ describe('live mode on desktop', () => {
 
     expect(await ui.find({ type: 'Text', text: /node prototypes\/live-helper\/server\.mjs/ })).toBeDefined()
     expect(await ui.find({ key: 'live', text: /Go live/ })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+describe('live mode on the terminal', () => {
+  test('Go live draws the helper frame file as an Image with the touch overlay', async ($, on) => {
+    mock.clock(on)
+    fakeHelper(on, [])
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+
+    await ui.press({ key: 'live' })
+
+    const screen = await ui.find({ type: 'Image', key: 'screen' })
+    expect(JSON.stringify(screen)).toContain('slot-1.rgb')
+    expect(await ui.find({ type: 'Client', key: 'touch' })).toBeDefined()
+    expect(await ui.find({ key: 'probe' })).toBeUndefined()
+    await ui.press({ key: 'live' })
+    await ui.unmount()
+  })
+})
+
+describe('stream test on desktop', () => {
+  test('draws each embedding of the helper stream', async ($, on) => {
+    mock.clock(on)
+    fakeHelper(on, [])
+    const ui = await $.ui.mount(PANE)
+
+    await ui.press({ key: 'probe' })
+
+    const pictures = await ui.findAll({ type: 'Svg' })
+    expect(JSON.stringify(pictures)).toContain('stream.mjpeg?v=svg-interactive')
+    expect(JSON.stringify(pictures)).toContain('stream.mjpeg?v=svg-plain')
+    expect(await ui.find({ type: 'Markdown', text: /stream\.mjpeg\?v=markdown/ })).toBeDefined()
     await ui.unmount()
   })
 })

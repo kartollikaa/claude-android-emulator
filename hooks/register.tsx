@@ -9,7 +9,18 @@ import {
   parseSipsSize,
   screenSvg,
 } from './adb'
-import { HELPER, POLL_MS, RATE_WINDOW_MS, parseLiveFrame } from './live'
+import type { LiveMode } from '../types'
+import {
+  FILE_POLL_MS,
+  HELPER,
+  POLL_MS,
+  PROBE_VARIANTS,
+  RATE_WINDOW_MS,
+  parseFileFrame,
+  parseLiveFrame,
+  streamMarkdown,
+  streamSvg,
+} from './live'
 
 const PANE = 'android'
 const PREVIEW_LONG_SIDE = 720
@@ -29,11 +40,15 @@ const isBusy = atom({ plugin: 'android-emulator', key: 'isBusy' } as const, fals
 const isLive = atom({ plugin: 'android-emulator', key: 'isLive' } as const, false)
 const liveFrame = atom({ plugin: 'android-emulator', key: 'liveFrame' } as const, null)
 const liveRate = atom({ plugin: 'android-emulator', key: 'liveRate' } as const, 0)
+const liveMode = atom({ plugin: 'android-emulator', key: 'liveMode' } as const, 'svg')
+const liveFile = atom({ plugin: 'android-emulator', key: 'liveFile' } as const, null)
+const isProbing = atom({ plugin: 'android-emulator', key: 'isProbing' } as const, false)
 
 let poller: Timer | null = null
 let isFetching = false
 let framesCounted = 0
 let countingSince = 0
+let lastFileSeq = -1
 
 async function sendInput($: EngineInterface, message: Record<string, unknown>): Promise<void> {
   const response = await $.http.fetch(`${HELPER}/input`, {
@@ -46,22 +61,56 @@ async function sendInput($: EngineInterface, message: Record<string, unknown>): 
   }
 }
 
+async function pollSvg($: EngineInterface): Promise<void> {
+  const after = (await read($, liveFrame))?.seq ?? -1
+  const response = await $.http.fetch(`${HELPER}/frame?after=${after}`)
+  if (!response.ok) {
+    throw new Error(`live helper answered ${response.status}`)
+  }
+  const next = parseLiveFrame(response.text)
+  if (next !== null) {
+    await update($, liveFrame, () => next)
+    framesCounted += 1
+  }
+}
+
+async function pollFile($: EngineInterface, isRateTick: boolean): Promise<void> {
+  const response = await $.http.fetch(`${HELPER}/frame-file?after=${lastFileSeq}`)
+  if (!response.ok) {
+    throw new Error(`live helper answered ${response.status}`)
+  }
+  const next = parseFileFrame(response.text)
+  if (next === null) return
+  lastFileSeq = next.seq
+  framesCounted += 1
+  const drawn = await read($, liveFile)
+  const isNewSize = drawn === null || drawn.width !== next.width || drawn.height !== next.height
+  if (isNewSize || isRateTick) {
+    await update($, liveFile, () => next)
+    return
+  }
+  const blitted = await $.ui.blit({
+    requestId: PANE,
+    key: 'screen',
+    source: { file: next.path, format: 'rgb', width: next.width, height: next.height, generation: next.seq },
+  })
+  if ('deny' in blitted && blitted.deny !== undefined) {
+    await update($, liveFile, () => next)
+  }
+}
+
 async function poll($: EngineInterface): Promise<void> {
   if (isFetching) return
   isFetching = true
   try {
-    const after = (await read($, liveFrame))?.seq ?? -1
-    const response = await $.http.fetch(`${HELPER}/frame?after=${after}`)
-    if (!response.ok) {
-      throw new Error(`live helper answered ${response.status}`)
-    }
-    const next = parseLiveFrame(response.text)
-    if (next !== null) {
-      await update($, liveFrame, () => next)
-      framesCounted += 1
-    }
     const now = await $.clock.now()
-    if (now - countingSince >= RATE_WINDOW_MS) {
+    const isRateTick = now - countingSince >= RATE_WINDOW_MS
+    if ((await read($, liveMode)) === 'file') {
+      await pollFile($, isRateTick)
+    } else {
+      await pollSvg($)
+    }
+    if (isRateTick) {
       const rate = Math.round((framesCounted * 1000) / (now - countingSince))
       framesCounted = 0
       countingSince = now
@@ -78,13 +127,15 @@ async function poll($: EngineInterface): Promise<void> {
   }
 }
 
-async function startLive($: EngineInterface): Promise<void> {
+async function startLive($: EngineInterface, mode: LiveMode): Promise<void> {
+  await update($, liveMode, () => mode)
   await update($, isLive, () => true)
   await update($, problem, () => null)
   if (poller === null) {
     framesCounted = 0
+    lastFileSeq = -1
     countingSince = await $.clock.now()
-    poller = $.clock.every(POLL_MS, () => void poll($))
+    poller = $.clock.every(mode === 'file' ? FILE_POLL_MS : POLL_MS, () => void poll($))
   }
   await poll($)
 }
@@ -94,6 +145,7 @@ async function stopLive($: EngineInterface): Promise<void> {
   poller = null
   await update($, isLive, () => false)
   await update($, liveRate, () => 0)
+  await update($, liveFile, () => null)
 }
 
 async function resolveAdb($: EngineInterface): Promise<string> {
@@ -198,7 +250,7 @@ export const register: Register = on => {
     })
 
     if (await read($, isLive)) {
-      void startLive($)
+      void startLive($, await read($, liveMode))
     }
 
     return next(e)
@@ -241,9 +293,35 @@ export const register: Register = on => {
     const live = await read($, isLive)
     const liveShot = await read($, liveFrame)
     const rate = await read($, liveRate)
+    const liveTerminal = await read($, liveFile)
+    const probing = await read($, isProbing)
 
     let screen = null
-    if (live && liveShot !== null && e.surface !== 'terminal') {
+    if (live && liveTerminal !== null && e.surface === 'terminal') {
+      const { Client, Image } = $.ui.resolve(e)
+      const maxRows = Math.max(4, (e.viewport?.rows ?? 40) - PANE_CHROME_ROWS)
+      const cells = fitCells(liveTerminal.width, liveTerminal.height, e.props.bodyColumns, maxRows)
+      screen = (
+        <Box position="relative" width={cells.columns} height={cells.rows}>
+          <Image
+            key="screen"
+            source={{
+              file: liveTerminal.path,
+              format: 'rgb',
+              width: liveTerminal.width,
+              height: liveTerminal.height,
+              generation: liveTerminal.seq,
+            }}
+            columns={cells.columns}
+            rows={cells.rows}
+            alt="Android screen (this terminal cannot draw images)"
+          />
+          <Box position="absolute" top={0} left={0} width={cells.columns} height={cells.rows}>
+            <Client key="touch" module="./touch-overlay.tsx" width={cells.columns} height={cells.rows} />
+          </Box>
+        </Box>
+      )
+    } else if (live && liveShot !== null && e.surface !== 'terminal') {
       const shown = Math.min(liveShot.height, PREVIEW_MAX_HEIGHT)
       const width = Math.round((liveShot.width * shown) / liveShot.height)
       const svg = screenSvg(liveShot.base64, liveShot.width, liveShot.height)
@@ -297,6 +375,34 @@ export const register: Register = on => {
         )
     }
 
+    let probe = null
+    if (probing && e.surface !== 'terminal') {
+      const { Markdown, Svg } = $.ui.resolve(e)
+      probe = (
+        <Box flexDirection="column" gap={1}>
+          <Text bold>Stream test: which of these moves while you swipe?</Text>
+          <Box flexDirection="row" flexWrap="wrap" gap={2}>
+            {PROBE_VARIANTS.map(variant => (
+              <Box key={`probe-${variant}`} flexDirection="column">
+                <Text dimColor>{variant}</Text>
+                <Svg
+                  source={streamSvg(variant, 360, 800)}
+                  alt={variant}
+                  width={144}
+                  height={320}
+                  isInteractive={variant === 'svg-interactive'}
+                />
+              </Box>
+            ))}
+            <Box key="probe-markdown" flexDirection="column">
+              <Text dimColor>markdown (stream, still)</Text>
+              <Markdown text={streamMarkdown('markdown')} />
+            </Box>
+          </Box>
+        </Box>
+      )
+    }
+
     return (
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="row" flexWrap="wrap" gap={1}>
@@ -310,12 +416,17 @@ export const register: Register = on => {
             </Button>
           ))}
           <Button key="refresh" label={busy ? 'Refreshing' : 'Refresh'} onPress={() => refresh($)} />
+          <Button
+            key="live"
+            variant={live ? 'primary' : 'secondary'}
+            label={live ? `Stop live (${rate} fps)` : 'Go live'}
+            onPress={press => (live ? stopLive($) : startLive($, press.surface === 'terminal' ? 'file' : 'svg'))}
+          />
           {e.surface !== 'terminal' && (
             <Button
-              key="live"
-              variant={live ? 'primary' : 'secondary'}
-              label={live ? `Stop live (${rate} fps)` : 'Go live'}
-              onPress={() => (live ? stopLive($) : startLive($))}
+              key="probe"
+              label={probing ? 'Hide stream test' : 'Test stream'}
+              onPress={() => update($, isProbing, value => !value)}
             />
           )}
         </Box>
@@ -335,6 +446,7 @@ export const register: Register = on => {
           <Text dimColor>No devices attached. Start one (emulator -avd NAME), then press Refresh.</Text>
         )}
         {screen}
+        {probe}
       </Box>
     )
   })

@@ -57,8 +57,13 @@ Once a session has loaded the mod from this folder, the engine writes the API ty
 ## Prototypes: live desktop views
 
 `prototypes/live-helper` is a throwaway Node helper that reads the emulator's gRPC frame stream
-and forwards touches and keys back. It drives the two desktop options being compared. It needs an
-emulator started with gRPC on, for example `emulator -avd Pixel_7 -no-window -grpc 8554`.
+and forwards touches and keys back. It drives the live views being compared. It needs an emulator
+started with gRPC on and the host GPU (`-no-window` falls back to software rendering, which caps
+the frame rate):
+
+```bash
+emulator -avd Pixel_7 -qt-hide-window -gpu host -grpc 8554
+```
 
 ```bash
 npm --prefix prototypes/live-helper install
@@ -70,8 +75,12 @@ node prototypes/live-helper/server.mjs
 
 - **Option A, browser pane:** open `http://127.0.0.1:7357` in the desktop app's built-in browser
   pane. Live canvas: click to tap, drag to swipe, type to send keys, Back / Home / Recents.
-- **Option B, mod pane:** `/android`, then **Go live**. The pane polls the helper for JPEG frames
-  drawn as an `Svg`, with a `Client` touch overlay that sends taps and swipes back.
+- **Option B, mod pane:** `/android`, then **Go live**. On the desktop the pane polls the helper for
+  JPEG frames drawn as an `Svg`; in the terminal it draws the helper's raw frame files as an `Image`
+  swapped with `$.ui.blit`. Both have a `Client` touch overlay that sends taps and swipes back.
+- **Stream test (desktop):** **Test stream** draws the helper's MJPEG stream through each embedding
+  the desktop might load natively (`Svg` image, interactive `Svg`, `Markdown` image); the helper
+  logs which ones the desktop requests (`mjpeg stream opened: v=...`).
 
 ## Layout
 
