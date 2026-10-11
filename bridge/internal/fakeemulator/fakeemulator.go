@@ -20,6 +20,9 @@ import (
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 )
 
+// Stopping the server inside the SHUTDOWN call could drop its answer.
+const powerOffDelay = 100 * time.Millisecond
+
 type Fake struct {
 	pb.UnimplementedEmulatorControllerServer
 
@@ -266,7 +269,7 @@ func (f *Fake) SetVmState(_ context.Context, state *pb.VmRunState) (*emptypb.Emp
 	defer f.mu.Unlock()
 	f.vmStates = append(f.vmStates, state.GetState())
 	if state.GetState() == pb.VmRunState_SHUTDOWN {
-		go f.Stop()
+		time.AfterFunc(powerOffDelay, f.Stop)
 	}
 	return &emptypb.Empty{}, nil
 }
