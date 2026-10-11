@@ -14,6 +14,13 @@ export type Frame = {
   generation: number
 }
 
+export type LiveFrame = {
+  seq: number
+  width: number
+  height: number
+  base64: string
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'android-emulator': {
@@ -22,6 +29,9 @@ declare module 'claude-code' {
       frame: Frame | null
       problem: string | null
       isBusy: boolean
+      isLive: boolean
+      liveFrame: LiveFrame | null
+      liveRate: number
     }
   }
 }

@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import {
   CAPTURE_SCRIPT,
@@ -9,17 +9,92 @@ import {
   parseSipsSize,
   screenSvg,
 } from './adb'
+import { HELPER, POLL_MS, RATE_WINDOW_MS, parseLiveFrame } from './live'
 
 const PANE = 'android'
 const PREVIEW_LONG_SIDE = 720
 const PREVIEW_MAX_HEIGHT = 640
 const PANE_CHROME_ROWS = 6
+const NAV_KEYS = [
+  { key: 'GoBack', label: 'Back' },
+  { key: 'GoHome', label: 'Home' },
+  { key: 'AppSwitch', label: 'Recents' },
+] as const
 
 const devices = atom({ plugin: 'android-emulator', key: 'devices' } as const, [])
 const selected = atom({ plugin: 'android-emulator', key: 'selected' } as const, null)
 const frame = atom({ plugin: 'android-emulator', key: 'frame' } as const, null)
 const problem = atom({ plugin: 'android-emulator', key: 'problem' } as const, null)
 const isBusy = atom({ plugin: 'android-emulator', key: 'isBusy' } as const, false)
+const isLive = atom({ plugin: 'android-emulator', key: 'isLive' } as const, false)
+const liveFrame = atom({ plugin: 'android-emulator', key: 'liveFrame' } as const, null)
+const liveRate = atom({ plugin: 'android-emulator', key: 'liveRate' } as const, 0)
+
+let poller: Timer | null = null
+let isFetching = false
+let framesCounted = 0
+let countingSince = 0
+
+async function sendInput($: EngineInterface, message: Record<string, unknown>): Promise<void> {
+  const response = await $.http.fetch(`${HELPER}/input`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(message),
+  })
+  if (!response.ok) {
+    throw new Error(`live helper answered ${response.status}: ${response.text}`)
+  }
+}
+
+async function poll($: EngineInterface): Promise<void> {
+  if (isFetching) return
+  isFetching = true
+  try {
+    const after = (await read($, liveFrame))?.seq ?? -1
+    const response = await $.http.fetch(`${HELPER}/frame?after=${after}`)
+    if (!response.ok) {
+      throw new Error(`live helper answered ${response.status}`)
+    }
+    const next = parseLiveFrame(response.text)
+    if (next !== null) {
+      await update($, liveFrame, () => next)
+      framesCounted += 1
+    }
+    const now = await $.clock.now()
+    if (now - countingSince >= RATE_WINDOW_MS) {
+      const rate = Math.round((framesCounted * 1000) / (now - countingSince))
+      framesCounted = 0
+      countingSince = now
+      await update($, liveRate, () => rate)
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    await stopLive($)
+    await update($, problem, () =>
+      `Live helper not reachable at ${HELPER} (${reason}). Start it: node prototypes/live-helper/server.mjs`,
+    )
+  } finally {
+    isFetching = false
+  }
+}
+
+async function startLive($: EngineInterface): Promise<void> {
+  await update($, isLive, () => true)
+  await update($, problem, () => null)
+  if (poller === null) {
+    framesCounted = 0
+    countingSince = await $.clock.now()
+    poller = $.clock.every(POLL_MS, () => void poll($))
+  }
+  await poll($)
+}
+
+async function stopLive($: EngineInterface): Promise<void> {
+  poller?.cancel()
+  poller = null
+  await update($, isLive, () => false)
+  await update($, liveRate, () => 0)
+}
 
 async function resolveAdb($: EngineInterface): Promise<string> {
   const candidates = adbCandidates({
@@ -122,7 +197,30 @@ export const register: Register = on => {
       description: 'Show the Android emulator or device screen in a pane',
     })
 
+    if (await read($, isLive)) {
+      void startLive($)
+    }
+
     return next(e)
+  })
+
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE) {
+      await stopLive($)
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('ui.message', async ($, e) => {
+    const data = e.data as { type?: unknown; points?: unknown } | null
+    if (e.requestId === PANE && data?.type === 'gesture' && Array.isArray(data.points)) {
+      await sendInput($, { type: 'gesture', points: data.points }).catch(error =>
+        update($, problem, () => (error instanceof Error ? error.message : String(error))),
+      )
+    }
+
+    return {}
   })
 
   on('command.run', { command: 'android' }, async $ => {
@@ -140,9 +238,32 @@ export const register: Register = on => {
     const shot = await read($, frame)
     const error = await read($, problem)
     const busy = await read($, isBusy)
+    const live = await read($, isLive)
+    const liveShot = await read($, liveFrame)
+    const rate = await read($, liveRate)
 
     let screen = null
-    if (shot !== null && e.surface === 'terminal') {
+    if (live && liveShot !== null && e.surface !== 'terminal') {
+      const shown = Math.min(liveShot.height, PREVIEW_MAX_HEIGHT)
+      const width = Math.round((liveShot.width * shown) / liveShot.height)
+      const svg = screenSvg(liveShot.base64, liveShot.width, liveShot.height)
+      if (svg === null) {
+        screen = <Text dimColor>The live frame is too large to draw here.</Text>
+      } else if (e.surface === 'desktop') {
+        const { Client, Svg } = $.ui.resolve(e)
+        screen = (
+          <Box position="relative" alignSelf="flex-start">
+            <Svg source={svg} alt="Android screen" width={width} height={shown} />
+            <Box position="absolute" top={0} left={0} width="100%" height="100%">
+              <Client key="touch" module="./touch-overlay.tsx" width="100%" height="100%" />
+            </Box>
+          </Box>
+        )
+      } else {
+        const { Svg } = $.ui.resolve(e)
+        screen = <Svg source={svg} alt="Android screen" width={width} height={shown} />
+      }
+    } else if (shot !== null && e.surface === 'terminal') {
       const { Image } = $.ui.resolve(e)
       const maxRows = Math.max(4, (e.viewport?.rows ?? 40) - PANE_CHROME_ROWS)
       const cells = fitCells(shot.width, shot.height, e.props.bodyColumns, maxRows)
@@ -189,7 +310,26 @@ export const register: Register = on => {
             </Button>
           ))}
           <Button key="refresh" label={busy ? 'Refreshing' : 'Refresh'} onPress={() => refresh($)} />
+          {e.surface !== 'terminal' && (
+            <Button
+              key="live"
+              variant={live ? 'primary' : 'secondary'}
+              label={live ? `Stop live (${rate} fps)` : 'Go live'}
+              onPress={() => (live ? stopLive($) : startLive($))}
+            />
+          )}
         </Box>
+        {live && (
+          <Box flexDirection="row" gap={1}>
+            {NAV_KEYS.map(nav => (
+              <Button
+                key={`nav-${nav.key}`}
+                label={nav.label}
+                onPress={() => sendInput($, { type: 'key', key: nav.key })}
+              />
+            ))}
+          </Box>
+        )}
         {error !== null && <Text color="error">{error}</Text>}
         {list.length === 0 && (
           <Text dimColor>No devices attached. Start one (emulator -avd NAME), then press Refresh.</Text>

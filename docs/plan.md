@@ -133,11 +133,16 @@ One PR per item, each reviewed before the next starts.
 9. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and builds), packaged bridge
    binaries, README, public repository.
 
+## Decisions
+
+- **Desktop first.** The desktop app's Code tab comes before the terminal pane.
+- **Bridge language: Go** — first-class gRPC, one static binary per platform, easy
+  cross-compilation; FFmpeg is spawned for device decoding at first.
+- **Desktop view: pending** the comparison of the two prototypes (option A, browser pane;
+  option B, live mod pane) — see the README's Prototypes section.
+
 ## Open decisions (owner)
 
-- **Bridge language.** Recommended: **Go** — first-class gRPC, one static binary per platform,
-  easy cross-compilation; FFmpeg is spawned for device decoding at first. Alternatives: Swift
-  (native VideoToolbox, macOS-only), Rust. Go is not installed on this machine yet.
 - **Bridge distribution.** Recommended for the first public release: CI-built binaries shipped
   inside the plugin (a `/plugin install` copies the repository, so it works with no extra step);
   revisit with release downloads or a Homebrew tap if the size hurts.
@@ -150,4 +155,7 @@ One PR per item, each reviewed before the next starts.
 | Emulator discovery | `emulator -avd <name> -no-window -grpc <port>` boots headless and writes `pid_<pid>.ini` with `grpc.port` and no `grpc.token` (no auth unless asked for) |
 | Skeleton capture pipeline | Works end to end against a headless emulator outside the UI (devices → `screencap` → PNG → JPEG). `screencap` delivers a couple of frames per second at best, PNG or raw: a live view needs the bridge |
 | Desktop frame size | A 720 px JPEG of the phone screen takes about a quarter of the `Svg` source cap: room for a sharper desktop frame |
-| Desktop `Svg` drawing, Ghostty `Image`, `Client` over `Image`, gRPC stream rate | Not yet run (roadmap 1.1–1.4) |
+| gRPC stream and input (prototype helper) | `streamScreenshot` RGB888 at reduced size works with no token; rows arrive top-down, despite the proto's "bottom up" note. `sendTouch` taps and swipes and `sendKey` `GoHome`/`GoBack`/`AppSwitch` all act on the emulator |
+| Option A: browser-pane live view | Works in the desktop app's built-in browser pane: live frames, drag to swipe, nav keys. Frames peak well under 60 fps during animations on a headless emulator; the software GPU of `-no-window` and the stream size are the first suspects |
+| Option B: live mod pane | Built and covered by tests (JPEG-in-`Svg` frames, `Client` touch overlay); not yet seen on the real desktop surface |
+| Ghostty `Image`, `Client` over `Image` | Not yet run (terminal comes after desktop) |

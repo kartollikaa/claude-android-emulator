@@ -54,14 +54,35 @@ claude plugin test ~/Projects/claude-android-emulator
 Once a session has loaded the mod from this folder, the engine writes the API types to
 `.claude-plugin/types/` (git-ignored), and `tsc -p .` type-checks the mod.
 
+## Prototypes: live desktop views
+
+`prototypes/live-helper` is a throwaway Node helper that reads the emulator's gRPC frame stream
+and forwards touches and keys back. It drives the two desktop options being compared. It needs an
+emulator started with gRPC on, for example `emulator -avd Pixel_7 -no-window -grpc 8554`.
+
+```bash
+npm --prefix prototypes/live-helper install
+```
+
+```bash
+node prototypes/live-helper/server.mjs
+```
+
+- **Option A, browser pane:** open `http://127.0.0.1:7357` in the desktop app's built-in browser
+  pane. Live canvas: click to tap, drag to swipe, type to send keys, Back / Home / Recents.
+- **Option B, mod pane:** `/android`, then **Go live**. The pane polls the helper for JPEG frames
+  drawn as an `Svg`, with a `Client` touch overlay that sends taps and swipes back.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `.claude-plugin/plugin.json` | The mod's manifest |
 | `.claude-plugin/marketplace.json` | Makes this repository a one-plugin marketplace |
-| `hooks/register.tsx` | The hooks module: the `/android` command and the pane |
-| `hooks/adb.ts` | Pure helpers: adb discovery, parsing, sizing |
+| `hooks/register.tsx` | The hooks module: the `/android` command, the pane, live mode |
+| `hooks/touch-overlay.tsx` | The `Client` surface module that turns pointer drags into gestures |
+| `hooks/adb.ts`, `hooks/live.ts` | Pure helpers: adb discovery, parsing, sizing, live frames |
+| `prototypes/live-helper/` | Throwaway Node helper for the desktop view prototypes |
 | `types/index.d.ts` | The `$.state` contract |
 | `tests/` | `claude plugin test` suites |
 | `docs/plan.md` | Findings, target architecture, roadmap, spike log |

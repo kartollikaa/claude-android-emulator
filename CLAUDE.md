@@ -22,6 +22,9 @@ Read `README.md` for usage and `docs/plan.md` for the architecture and roadmap b
 - Never write frames or other churn into the plugin folder: the session hot-reloads on every
   change there. Frames go under `$TMPDIR/claude-android-emulator/`.
 - Render hooks never write state; writes happen in press handlers or other events via `update`.
+- The validator follows `$` only into functions declared in the hooks module itself, and reads
+  state atoms only when they are declared there: every function taking `$` and every `atom(...)`
+  lives in `hooks/register.tsx`; other files hold pure helpers.
 
 ## Checks before any commit
 
