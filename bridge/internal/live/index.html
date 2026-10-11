@@ -103,6 +103,7 @@
   .settings button:hover { background: var(--button-hover); }
   .settings input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
   .settings :disabled { opacity: 0.6; cursor: default; }
+  .settings.busy, .settings.busy * { cursor: progress; }
   .settings :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
   .note { margin: 0; max-width: 100%; color: var(--muted); overflow-wrap: anywhere; text-align: center; }
   .note.error { padding: 0; border: 0; color: var(--error); }
@@ -201,7 +202,11 @@
     if (state.saved && seenSaved !== undefined && state.saved !== seenSaved) note(`Saved ${state.saved}`)
     seenSaved = state.saved || ''
     if (state.connected && state.booted) {
-      if (shown !== null && !settingsPanel.hidden) loadSettings()
+      // The emulator may be another one now, with other settings and languages.
+      if (shown !== null) {
+        localeNames = null
+        if (!settingsPanel.hidden) loadSettings()
+      }
       return show(null)
     }
     if (state.connected) return show('progress', { title: `Booting ${label(state.avd || state.serial)}` })
@@ -380,7 +385,6 @@
   // Device settings: the panel shows what the device reports, and every change answers with the settings read back.
   const settingsButton = el('settings')
   const settingsPanel = el('settings-panel')
-  const settingControls = [...settingsPanel.querySelectorAll('input, select, button')]
   let settings = null
   let localeNames = null
 
@@ -411,23 +415,30 @@
     if (!changed) await settingsRequest(() => fetch('/settings'))
   }
 
-  async function settingsRequest(request) {
-    settingControls.forEach(control => { control.disabled = true })
-    try {
-      const response = await request()
-      if (!response.ok) {
-        note((await response.text()).trim() || 'The device settings are unavailable', true)
+  // Requests run one at a time and only the newest answer is drawn, so a burst of changes does not fight the user.
+  let settingsQueue = Promise.resolve()
+  let newestSettingsRequest = 0
+  function settingsRequest(request) {
+    const id = ++newestSettingsRequest
+    settingsQueue = settingsQueue.then(async () => {
+      settingsPanel.classList.add('busy')
+      try {
+        const response = await request()
+        if (!response.ok) {
+          note((await response.text()).trim() || 'The device settings are unavailable', true)
+          return false
+        }
+        const answer = await response.json()
+        if (id === newestSettingsRequest) showSettings(answer)
+        return true
+      } catch (error) {
+        note(`Cannot reach the bridge: ${error}`, true)
         return false
+      } finally {
+        if (id === newestSettingsRequest) settingsPanel.classList.remove('busy')
       }
-      showSettings(await response.json())
-      return true
-    } catch (error) {
-      note(`Cannot reach the bridge: ${error}`, true)
-      return false
-    } finally {
-      settingControls.forEach(control => { control.disabled = false })
-      el('locale').disabled = !settings?.locale
-    }
+    })
+    return settingsQueue
   }
 
   function showSettings(answer) {
@@ -477,6 +488,7 @@
       select.disabled = true
       return
     }
+    select.disabled = false
     const names = localeNames || new Map()
     const entries = names.has(settings.locale) ? [...names] : [[settings.locale, settings.locale], ...names]
     select.replaceChildren(...entries.map(([tag, name]) => new Option(name, tag)))

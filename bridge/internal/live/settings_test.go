@@ -22,7 +22,7 @@ func TestDensityStepsFollowAndroidSettings(t *testing.T) {
 }
 
 func TestParseSettings(t *testing.T) {
-	settings, err := parseSettings("night=Night mode: yes\nfont=1.15\nPhysical density: 420\nOverride density: 480\nlocale=ru-RU\n")
+	settings, err := parseSettings("night=Night mode: yes\ncomputed=\nfont=1.15\nPhysical density: 420\nOverride density: 480\nPhysical size: 1080x2400\nlocale=ru-RU\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,15 +30,23 @@ func TestParseSettings(t *testing.T) {
 		t.Errorf("parsed %+v", settings)
 	}
 
-	settings, err = parseSettings("night=Night mode: auto\nfont=null\nPhysical density: 420\nlocale=Unknown command: get-device-locale\n")
+	settings, err = parseSettings("night=Night mode: auto\ncomputed=mComputedNightMode=false\nfont=null\nPhysical density: 420\nPhysical size: 1080x2400\nOverride size: 720x1600\nlocale=Unknown command: get-device-locale\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.DarkTheme || settings.FontScale != 1 || settings.Density != 420 || settings.Locale != nil {
-		t.Errorf("parsed %+v, want light, scale 1, the physical density and no locale", settings)
+	if settings.DarkTheme || settings.FontScale != 1 || settings.Density != 420 || settings.Locale != nil || settings.shortSide != 720 {
+		t.Errorf("parsed %+v, want light, scale 1, the physical density, no locale and the overridden size", settings)
 	}
 
-	if _, err := parseSettings("night=Night mode: no\nfont=1.0\nlocale=en-US\n"); err == nil {
+	settings.FontScaleSteps[0] = 9
+	if again, _ := parseSettings("font=1\nPhysical density: 420\nPhysical size: 1080x2400\n"); again.FontScaleSteps[0] != 0.85 {
+		t.Errorf("editing one answer's font steps changed the next answer's to %v", again.FontScaleSteps)
+	}
+
+	if _, err := parseSettings("night=Night mode: no\nfont=1.0\nPhysical size: 1080x2400\nlocale=en-US\n"); err == nil {
 		t.Error("an answer without a density parsed")
+	}
+	if _, err := parseSettings("night=Night mode: no\nfont=1.0\nPhysical density: 420\nlocale=en-US\n"); err == nil {
+		t.Error("an answer without a display size parsed")
 	}
 }

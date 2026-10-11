@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// The fake device's cmd, settings and wm keep the configuration in files under state/.
+// The fake device's cmd, dumpsys, settings and wm keep the configuration in files under state/.
 var fakeDeviceCommands = map[string]string{
 	"cmd": `#!/bin/sh
 s="$(dirname "$0")/../state"
@@ -36,20 +36,31 @@ get) cat "$s/font" 2>/dev/null || echo null ;;
 put) echo "$4" > "$s/font" ;;
 esac
 `,
+	"dumpsys": `#!/bin/sh
+s="$(dirname "$0")/../state"
+if [ -f "$s/computed" ]; then computed=$(cat "$s/computed")
+elif [ "$(cat "$s/night")" = yes ]; then computed=true
+else computed=false; fi
+echo " mWaitForDeviceInactive=false mComputedNightMode=$computed customStart=22:00"
+`,
 	"wm": `#!/bin/sh
 s="$(dirname "$0")/../state"
-case "$2" in
-"")
+case "$1 $2" in
+"density ")
   echo "Physical density: $(cat "$s/physical")"
   if [ -f "$s/override" ]; then echo "Override density: $(cat "$s/override")"; fi ;;
-reset) rm -f "$s/override" ;;
-*) echo "$2" > "$s/override" ;;
+"density reset") rm -f "$s/override" ;;
+density\ *)
+  [ -f "$s/density-broken" ] && { echo "Error: bad number" >&2; exit 255; }
+  echo "$2" > "$s/override" ;;
+"size ")
+  echo "Physical size: $(cat "$s/size")"
+  if [ -f "$s/size-override" ]; then echo "Override size: $(cat "$s/size-override")"; fi ;;
 esac
 `,
 }
 
-// deviceWithSettings starts a bridge on a fake device that is light, at font scale 1 and 420 dpi, in en-US,
-// with state the files to change first; it returns the harness and adb's folder.
+// deviceWithSettings starts a bridge on a light 1080x2400 device at 420 dpi in en-US, after writing the state files given.
 func deviceWithSettings(t *testing.T, state map[string]string) (*harness, string) {
 	t.Helper()
 	root, tools := sdkWithADB(t)
@@ -63,7 +74,7 @@ func deviceWithSettings(t *testing.T, state map[string]string) (*harness, string
 			t.Fatal(err)
 		}
 	}
-	files := map[string]string{"night": "no", "physical": "420", "locale": "en-US"}
+	files := map[string]string{"night": "no", "physical": "420", "size": "1080x2400", "locale": "en-US"}
 	for name, text := range state {
 		files[name] = text
 	}
@@ -126,10 +137,26 @@ func TestSettingsReadTheCurrentConfiguration(t *testing.T) {
 	locale := "ru-RU"
 	want := Settings{
 		DarkTheme: true, FontScale: 1.15, FontScaleSteps: fontScaleSteps,
-		Density: 480, PhysicalDensity: 420, DensitySteps: densitySteps(420, deviceWidth), Locale: &locale,
+		Density: 480, PhysicalDensity: 420, DensitySteps: []int{356, 420, 460, 500, 540}, Locale: &locale,
 	}
 	if !reflect.DeepEqual(settings, want) {
 		t.Errorf("settings %+v, want %+v", settings, want)
+	}
+}
+
+func TestDarkThemeFollowsAScheduleThatIsOn(t *testing.T) {
+	h, _ := deviceWithSettings(t, map[string]string{"night": "auto", "computed": "true"})
+
+	if settings := readSettings(t, h); !settings.DarkTheme {
+		t.Error("a dark theme on by its schedule reads as off")
+	}
+}
+
+func TestDisplaySizeStepsFollowASizeOverride(t *testing.T) {
+	h, _ := deviceWithSettings(t, map[string]string{"size-override": "720x1600"})
+
+	if settings := readSettings(t, h); !reflect.DeepEqual(settings.DensitySteps, densitySteps(420, 720)) {
+		t.Errorf("steps %v, want %v for a display overridden to 720 px across", settings.DensitySteps, densitySteps(420, 720))
 	}
 }
 
@@ -189,6 +216,17 @@ func TestDensityOutOfRange(t *testing.T) {
 	}
 	if calls := adbCalls(tools); len(calls) != 1 || calls[0] != "" {
 		t.Errorf("refused changes ran adb: %q", calls)
+	}
+}
+
+func TestAFailingSettingStopsTheRest(t *testing.T) {
+	h, tools := deviceWithSettings(t, map[string]string{"density-broken": ""})
+
+	if status, answer := control(t, h, "/settings", `{"density": 480, "locale": "fr-FR"}`); status != http.StatusBadGateway || !strings.Contains(answer, "bad number") {
+		t.Errorf("a change whose density fails answered %d %q, want 502 with the device's error", status, answer)
+	}
+	if locale := deviceState(t, tools, "locale"); locale != "en-US" {
+		t.Errorf("the locale after the failed density changed to %q", locale)
 	}
 }
 
@@ -265,6 +303,9 @@ func TestResetRestoresTheDefaults(t *testing.T) {
 	}
 	if override := deviceState(t, tools, "override"); override != "" {
 		t.Errorf("the device still overrides its density with %s", override)
+	}
+	if calls := settingsCalls(tools); len(calls) != 1 {
+		t.Errorf("reset took %d adb calls besides reading, want one shell line: %q", len(calls), calls)
 	}
 }
 

@@ -16,6 +16,7 @@ var ErrLocaleUnavailable = errors.New("this Android version cannot change the de
 var (
 	languageTag  = regexp.MustCompile(`^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$`)
 	densityLines = regexp.MustCompile(`(?m)^(Physical|Override) density: ([0-9]+)\s*$`)
+	sizeLines    = regexp.MustCompile(`(?m)^(?:Physical|Override) size: ([0-9]+)x([0-9]+)\s*$`)
 )
 
 // Font size's steps in Android's own Settings.
@@ -26,8 +27,13 @@ const (
 	minDensity, maxDensity     = 120, 960
 )
 
-// One shell call reads every setting, each on a line of its own.
-const readSettingsScript = `echo "night=$(cmd uimode night)"; echo "font=$(settings get system font_scale)"; wm density; echo "locale=$(cmd locale get-device-locale 2>/dev/null)"`
+const (
+	// One shell call reads every setting, each on a line of its own; dumpsys tells whether a scheduled dark theme is on now.
+	readSettingsScript = `echo "night=$(cmd uimode night)"; echo "computed=$(dumpsys uimode | grep -o 'mComputedNightMode=[a-z]*')"; ` +
+		`echo "font=$(settings get system font_scale)"; wm density; wm size; echo "locale=$(cmd locale get-device-locale 2>/dev/null)"`
+	// The shell's own exit stays 0, so an error is adb's and a device without the command answers something else.
+	readLocaleScript = "cmd locale get-device-locale 2>/dev/null; true"
+)
 
 // Settings is the device configuration the settings panel shows and changes.
 type Settings struct {
@@ -39,6 +45,8 @@ type Settings struct {
 	DensitySteps    []int     `json:"densitySteps"`
 	// Locale is the device's language tag, null where adb cannot set it.
 	Locale *string `json:"locale"`
+	// The display's current short side in pixels, which bounds the largest display size.
+	shortSide int
 }
 
 // SettingsChange names the settings to change; the ones left out stay as they are.
@@ -60,15 +68,7 @@ func (b *Bridge) ReadSettings(ctx context.Context) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
-	settings, err := parseSettings(answer)
-	if err != nil {
-		return Settings{}, err
-	}
-	if conn := b.connection(); conn != nil {
-		settings.DensitySteps = densitySteps(settings.PhysicalDensity, min(conn.Device.Width, conn.Device.Height))
-	}
-
-	return settings, nil
+	return parseSettings(answer)
 }
 
 // DeviceLocales lists the language tags the device can switch to.
@@ -77,7 +77,7 @@ func (b *Bridge) DeviceLocales(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The shell's own exit stays 0, so an error here is adb's and a device without the command answers no tags.
+	// As in readLocaleScript, a device without the command answers no tags.
 	answer, err := device.Run(ctx, "shell", "cmd locale list-device-locales 2>/dev/null; true")
 	if err != nil {
 		return nil, err
@@ -101,18 +101,17 @@ func (b *Bridge) ChangeSettings(ctx context.Context, change SettingsChange) (Set
 		return Settings{}, err
 	}
 	if change.Locale != nil {
-		current, err := b.ReadSettings(ctx)
+		current, err := device.Run(ctx, "shell", readLocaleScript)
 		if err != nil {
 			return Settings{}, err
 		}
-		if current.Locale == nil {
+		if !languageTag.MatchString(strings.TrimSpace(current)) {
 			return Settings{}, ErrLocaleUnavailable
 		}
 	}
-	for _, command := range change.commands() {
-		if _, err := device.Run(ctx, append([]string{"shell"}, command...)...); err != nil {
-			return Settings{}, err
-		}
+	// One shell line stops at the first command that fails; every value in it was validated above.
+	if _, err := device.Run(ctx, "shell", strings.Join(change.commands(), " && ")); err != nil {
+		return Settings{}, err
 	}
 
 	return b.ReadSettings(ctx)
@@ -140,39 +139,42 @@ func (change SettingsChange) validate() error {
 	return nil
 }
 
-func (change SettingsChange) commands() [][]string {
-	var commands [][]string
+func (change SettingsChange) commands() []string {
+	var commands []string
 	if change.DarkTheme != nil {
 		mode := "no"
 		if *change.DarkTheme {
 			mode = "yes"
 		}
-		commands = append(commands, []string{"cmd", "uimode", "night", mode})
+		commands = append(commands, "cmd uimode night "+mode)
 	}
 	if change.FontScale != nil {
-		commands = append(commands, []string{"settings", "put", "system", "font_scale", strconv.FormatFloat(*change.FontScale, 'f', -1, 64)})
+		commands = append(commands, "settings put system font_scale "+strconv.FormatFloat(*change.FontScale, 'f', -1, 64))
 	}
 	if change.Density != nil {
 		density := "reset"
 		if *change.Density != 0 {
 			density = strconv.Itoa(*change.Density)
 		}
-		commands = append(commands, []string{"wm", "density", density})
+		commands = append(commands, "wm density "+density)
 	}
 	if change.Locale != nil {
-		commands = append(commands, []string{"cmd", "locale", "set-device-locale", *change.Locale})
+		commands = append(commands, "cmd locale set-device-locale "+*change.Locale)
 	}
 
 	return commands
 }
 
 func parseSettings(answer string) (Settings, error) {
-	settings := Settings{FontScale: 1, FontScaleSteps: fontScaleSteps}
+	settings := Settings{FontScale: 1, FontScaleSteps: slices.Clone(fontScaleSteps)}
+	computedNight := ""
 	for _, line := range strings.Split(answer, "\n") {
 		key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
 		switch key {
 		case "night":
 			settings.DarkTheme = strings.TrimSpace(strings.TrimPrefix(value, "Night mode:")) == "yes"
+		case "computed":
+			_, computedNight, _ = strings.Cut(value, "=")
 		case "font":
 			if scale, err := strconv.ParseFloat(value, 64); err == nil {
 				settings.FontScale = scale
@@ -190,9 +192,18 @@ func parseSettings(answer string) (Settings, error) {
 		}
 		settings.Density = density
 	}
-	if settings.PhysicalDensity == 0 {
-		return Settings{}, fmt.Errorf("the device reported no display density: %q", strings.TrimSpace(answer))
+	if computedNight != "" {
+		settings.DarkTheme = computedNight == "true"
 	}
+	for _, match := range sizeLines.FindAllStringSubmatch(answer, -1) {
+		width, _ := strconv.Atoi(match[1])
+		height, _ := strconv.Atoi(match[2])
+		settings.shortSide = min(width, height)
+	}
+	if settings.PhysicalDensity == 0 || settings.shortSide == 0 {
+		return Settings{}, fmt.Errorf("the device reported no display density or size: %q", strings.TrimSpace(answer))
+	}
+	settings.DensitySteps = densitySteps(settings.PhysicalDensity, settings.shortSide)
 
 	return settings, nil
 }
