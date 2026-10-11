@@ -1,0 +1,13 @@
+{
+  "name": "claude-android-emulator",
+  "description": "Android emulator and device screens inside Claude Code",
+  "owner": {
+    "name": "Dmitrii Maksimov"
+  },
+  "plugins": [
+    {
+      "name": "android-emulator",
+      "source": "./"
+    }
+  ]
+}

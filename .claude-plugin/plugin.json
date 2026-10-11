@@ -1,0 +1,8 @@
+{
+  "name": "android-emulator",
+  "version": "0.1.0",
+  "description": "Shows an Android emulator or device screen in a Claude Code pane",
+  "author": { "name": "Dmitrii Maksimov" },
+  "repository": "https://github.com/kartollikaa/claude-android-emulator",
+  "types": "./types/index.d.ts"
+}
