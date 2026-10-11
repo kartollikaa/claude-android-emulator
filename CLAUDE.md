@@ -76,4 +76,6 @@ carries only the `{"liveView": …}` line the mod reads; logs go to stderr. Emul
 `-grpc-use-token` (their gRPC port listens on every interface), start through the launcher so they
 leave the bridge's process tree, run detached in a session of their own, and log to a file under
 `$TMPDIR/claude-android-emulator/`, never a pipe. Screenshots and recordings default to the user's
-Desktop, so every test sets `CapturesDir` to a temporary folder.
+Desktop, so every test sets `CapturesDir` to a temporary folder. `adb shell` joins its arguments
+into one line the device's shell parses, so any value from a request is validated before it reaches
+adb (package names, language tags).

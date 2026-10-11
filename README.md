@@ -5,8 +5,9 @@ touchable, in the app's built-in browser pane. It is the Android counterpart of 
 built-in iOS Simulator panel.
 
 > **Status: in development.** `/emulator` opens the live view, its Start button boots a virtual
-> device, and a toolbar rotates it, takes screenshots and recordings, and opens App info. Next:
-> device settings, tools Claude can drive the emulator with, and a release with prebuilt bridges.
+> device, a toolbar rotates it, takes screenshots and recordings, and opens App info, and a settings
+> panel changes its theme, font size, display size and language. Next: tools Claude can drive the
+> emulator with, and a release with prebuilt bridges.
 > See [docs/plan.md](docs/plan.md).
 
 ## Requirements
@@ -44,6 +45,9 @@ The toolbar above the screen:
   Desktop. The device stops a long recording by itself, and that one is saved too.
 - **App info** opens the system App info screen of the app in front.
 - **Power** turns the screen off and on, as the side button does.
+- **Device settings** opens a panel to test an app against the device's configuration: Dark theme,
+  Font size and Display size (the steps Android's own Settings offers) and Language. Reset returns
+  the theme, font and display size to their defaults and leaves the language as it is.
 
 The emulator keeps running when the session ends, as Android Studio's does; the next `/emulator`
 shows it again.
@@ -112,6 +116,14 @@ recording (`screenrecord`) and App info use adb from the SDK's `platform-tools`,
 Frames are drawn upright, so the page sends touches in the upright picture and the bridge turns them
 back onto the panel. `/status` carries the `rotation`, `recordingSince` while recording, the
 newest saved file as `saved`, and `recordingError` when a recording could not be saved.
+
+The settings panel's routes go through adb too. `GET /settings` answers `darkTheme`, `fontScale`,
+`density` and `physicalDensity`, the steps Android's Settings offers for both, and the device
+`locale` (`null` where adb cannot set it). `POST /settings` changes any of `darkTheme`, `fontScale`,
+`density` (0 for the physical density) and `locale` (a BCP 47 tag) and answers the settings read
+back; one value out of range, named with its range in the answer, refuses the whole change.
+`POST /settings/reset` returns the theme, font scale and density to their defaults, and
+`GET /settings/locales` lists the tags the device can switch to.
 
 The page serves only this machine: the bridge listens on 127.0.0.1 and refuses requests whose
 `Host` or `Origin` is not its own, so no other web page can read the screen or drive the emulator.
