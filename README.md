@@ -64,4 +64,4 @@ Once a session has loaded the mod from this folder, the engine writes the API ty
 | `hooks/adb.ts` | Pure helpers: adb discovery, parsing, sizing |
 | `types/index.d.ts` | The `$.state` contract |
 | `tests/` | `claude plugin test` suites |
-| `docs/plan.md` | Research notes and the roadmap |
+| `docs/plan.md` | Findings, target architecture, roadmap, spike log |
