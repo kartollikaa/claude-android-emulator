@@ -61,9 +61,14 @@ Consequences:
 - Unverified: real fps/latency; the proto's note that rows are "bottom up".
 
 **Physical device: scrcpy server.** Push a pinned `scrcpy-server` jar (the protocol is internal and
-versioned), read H.264 from its video socket (`raw_stream=true` gives bare H.264), decode with
-VideoToolbox (FFmpeg `-hwaccel videotoolbox` → `rawvideo`), inject input through its binary control
-socket or `adb shell input`. Android Studio does the same with its own on-device agent.
+versioned: the server refuses a client of another version), run it with `app_process` over `adb
+shell`, and reach its sockets through `adb forward` (`tunnel_forward=true`). The video socket
+carries 12 bytes of codec metadata (codec id, width, height) once, then packets behind a 12-byte
+header (config flag, key-frame flag, PTS, size): Annex B H.264, SPS and PPS in the config packet.
+The control socket takes binary messages: key codes, text, touches (each carrying the video size it
+was made for: a touch made for another size is dropped), `RESET_VIDEO` for a fresh config and key
+frame. The size is sent once: after a rotation the encoder restarts and only the new SPS carries the
+new size. Android Studio does the same with its own on-device agent.
 
 **Fallback everywhere: `adb exec-out screencap`** (raw mode skips PNG encoding) — a few fps, no
 helper needed. This is what the skeleton uses.
@@ -136,10 +141,34 @@ One PR per item, each reviewed before the next starts.
 7. **Claude tools**: an `emulator` tool mirroring the iOS Simulator's actions (start, screenshot,
    tap, swipe, text, button, launch, open_url, logs) plus the settings and rotation, over the
    bridge's HTTP API.
-8. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and cross-compiled binaries),
+8. **Device seam**: the bridge drives a device interface instead of `*emulator.Conn`, the emulator
+   its only implementation; no behaviour change.
+9. **USB devices**: a phone plugged in over USB shows in the live view and answers Claude's tool
+   (see USB devices below).
+10. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and cross-compiled binaries),
    README, public repository.
 
-Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrcpy control socket).
+Later: one emulator or device per session, each bridge claiming its own.
+
+### USB devices
+
+- **Which device shows.** A running emulator first, as today; with none, the first adb device in the
+  `device` state that is not an emulator. Starting an emulator from the page switches the view to
+  it; shutting it down falls back to the phone. A phone in the `unauthorized` state shows on the page
+  with a hint to allow USB debugging on it.
+- **Video.** The bridge runs the pinned scrcpy server (video H.264, no audio, control on, long side
+  from `-stream-width`) and forwards its packets to the page untouched; the page decodes them with
+  WebCodecs and draws each frame on the canvas. A viewer that joins late gets the newest config
+  packet and the packets since the newest key frame; when that backlog grows too large, or a viewer
+  falls behind, the bridge asks for `RESET_VIDEO` and starts over from the next key frame. The bridge
+  reads the current video size from each SPS.
+- **Input.** Touches, keys and text go to the scrcpy control socket, touches in the current video's
+  pixels. Rotation sets `user_rotation` through adb with auto-rotate off, since scrcpy's own rotate
+  message only toggles.
+- **Everything else** runs over adb against the phone's serial, as for an emulator: screenshots
+  (`screencap -p`, scaled and JPEG-encoded in the bridge for Claude), recordings, App info, links,
+  launching and installing apps, logs and the device settings. Shut down is an emulator's only: the
+  page hides it and the route refuses it for a phone; Power sleeps and wakes the phone.
 
 ## Decisions
 
@@ -148,7 +177,13 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
   mod pane redraws the whole pane per frame and stays at a few frames per second even with touch
   working; the browser pane streams to a canvas at the emulator's rate.
 - **Bridge language: Go** — first-class gRPC, one static binary per platform, easy
-  cross-compilation; FFmpeg is spawned for device decoding at first.
+  cross-compilation.
+- **A phone's video is decoded in the page.** The browser pane's Chromium decodes H.264 through
+  WebCodecs with hardware acceleration, so the bridge forwards scrcpy's packets as they are and needs
+  no FFmpeg.
+- **The scrcpy server is pinned and embedded** in the bridge binary (`go:embed`), its release
+  digest checked by a test and its Apache-2.0 licence beside it; the bridge pushes it to
+  `/data/local/tmp` under a name carrying its version.
 - **Nothing manual.** The owner: the emulator starts from one button in the live view and the user
   never runs a command. `/emulator` starts the bridge, Claude opens the live view, the page boots
   the emulator. User-facing docs describe only that flow.
@@ -208,4 +243,6 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
 | Device settings on the real emulator | `cmd uimode night yes`, `settings put system font_scale`, `wm density` and `cmd locale set-device-locale` each take effect at once, and every failure exits non-zero; `cmd uimode night` names the mode (`auto` and the schedules included), and `dumpsys uimode`'s `mComputedNightMode` whether the dark theme is on now. `cmd locale list-device-locales` lists every locale ICU knows, numbering-system variants (`-u-nu-latn`) included, and an unknown `cmd` subcommand prints to stdout and exits 255. Display size's own + and − buttons in Settings step through exactly the densities DisplayDensityUtils' arithmetic gives: 356, 420, 460, 500, 540 for a 420 dpi, 1080 px wide panel |
 | Image results from a plugin tool | A plugin's tool is served through a loopback MCP server; a `tool.call` result that is a string arrives as text, and an array of Messages API blocks arrives as a tool_result holding those blocks, a base64 image among them. An MCP-style image block passes through unconverted. Measured by pointing a headless session (`ANTHROPIC_BASE_URL`) at a local fake Messages API that scripts the tool calls and logs each request body |
 | Claude's tool on the real emulator | The same fake API scripted start, screenshot, Home, a swipe, settings, logs and an off-screen tap against Pixel_7: each answered as expected and the JPEG reached the request as an image block. It caught a race: a bridge just started reported no emulator before it had looked, so start tried to boot a second one; `/status` now waits for that first look |
+| WebCodecs in the browser pane | The pane's Chromium is a secure context on `http://127.0.0.1`, has `VideoDecoder`, and supports H.264 Baseline, Main and High (`avc1.42E01E`, `avc1.4D401F`, `avc1.640028`), hardware acceleration preferred |
+| scrcpy server 3.3.3 against Pixel_7 | Pushed, started with `tunnel_forward=true audio=false control=true max_size=1080 send_device_meta=false`, reached through `adb forward tcp:… localabstract:scrcpy_<scid>`: the dummy byte, then codec metadata `h264` 488×1080, a 33-byte config packet (SPS, PPS) and a key frame. Home by key code, a tap carrying the video size opened a Settings row, `RESET_VIDEO` gave a fresh config packet and key frame. `ROTATE_DEVICE` set `user_rotation` but turned nothing in a portrait-locked activity |
 | `$.http.fetch` on a slow answer | A throwaway mod fetched from a server that answers after 30 s: the fetch was aborted at 30 s with `no complete answer within 30000ms`. The bridge's boot wait answers well inside that, and a cold boot from the tool (snapshot boot) finished inside a single wait |
