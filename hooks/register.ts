@@ -10,6 +10,7 @@ import {
   windowsPlatform,
 } from './bridge'
 import type { Platform } from './bridge'
+import { runAction, toolSpec } from './tool'
 
 // Inside HookBudget.ms: /emulator waits for the URL out of its own hook time.
 const ANNOUNCE_MS = 8_000
@@ -30,6 +31,7 @@ export const register: Register = on => {
       name: 'emulator',
       description: 'Open the Android emulator in the browser pane',
     })
+    await $.tool.register(toolSpec)
 
     return started
   })
@@ -45,6 +47,22 @@ export const register: Register = on => {
     })
 
     return { text: `Android emulator live view: ${started.url}` }
+  })
+
+  on('tool.call', { tool: 'mcp__android-emulator__emulator' }, async ($, e) => {
+    const started = await ensureBridge($)
+    if ('problem' in started) return { deny: started.problem }
+    const outcome = await runAction(
+      (method, path, body) =>
+        $.http.fetch(`${started.url}${path}`, {
+          method,
+          headers: body === undefined ? {} : { 'content-type': 'application/json' },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }),
+      e,
+    )
+
+    return 'error' in outcome ? { deny: outcome.error } : { result: outcome.blocks }
   })
 }
 

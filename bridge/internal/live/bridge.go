@@ -80,6 +80,9 @@ type Bridge struct {
 	latest    *emulator.Frame
 	viewers   map[chan struct{}]struct{}
 	recording *recording
+	// Closed once Run has first looked for a running emulator, so a state read before it does not say none runs.
+	looked     chan struct{}
+	markLooked func()
 }
 
 // New makes a bridge; Run connects it.
@@ -116,7 +119,9 @@ func New(config Config) *Bridge {
 		config.Now = time.Now
 	}
 
-	return &Bridge{config: config, viewers: map[chan struct{}]struct{}{}}
+	looked := make(chan struct{})
+
+	return &Bridge{config: config, viewers: map[chan struct{}]struct{}{}, looked: looked, markLooked: sync.OnceFunc(func() { close(looked) })}
 }
 
 // Run keeps an emulator connected until ctx ends, starting over whenever it goes away.
@@ -124,11 +129,13 @@ func (b *Bridge) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		conn := b.connect(ctx)
 		if conn == nil {
+			b.markLooked()
 			sleep(ctx, b.config.RetryInterval)
 			continue
 		}
 		size := conn.StreamBox(b.config.StreamWidth)
 		b.attach(conn)
+		b.markLooked()
 		b.config.Logger.Info("emulator connected", "serial", conn.Emulator.Serial, "device", conn.Device, "stream", size)
 		streaming, stopStreaming := context.WithCancel(ctx)
 		go b.watchBoot(streaming, conn)
@@ -226,6 +233,15 @@ func (b *Bridge) publish(frame emulator.Frame) {
 func (b *Bridge) State() State {
 	state, _ := b.snapshot()
 	return state
+}
+
+// LookedState answers the state once Run has first looked for a running emulator, or when ctx ends.
+func (b *Bridge) LookedState(ctx context.Context) State {
+	select {
+	case <-b.looked:
+	case <-ctx.Done():
+	}
+	return b.State()
 }
 
 func (b *Bridge) snapshot() (State, *emulator.Frame) {

@@ -12,8 +12,8 @@ built-in iOS Simulator panel is the reference experience.
 binaries) and asks Claude to open its live view in the app's built-in browser pane. The page lists
 the SDK's virtual devices, boots one from a Start button and shows it live and touchable; a toolbar
 rotates it, saves screenshots and screen recordings, opens App info and presses Power, and a settings
-panel switches the dark theme, font size, display size and language; the emulator outlives the
-session. The in-pane live view, the terminal code and the prototype helper
+panel switches the dark theme, font size, display size and language; Claude's `emulator` tool
+sees and drives the same device; the emulator outlives the session. The in-pane live view, the terminal code and the prototype helper
 are gone. See the spike log at the end.
 
 ## Findings
@@ -26,7 +26,7 @@ are gone. See the spike log at the end.
 | Frame rate | `$.ui.blit({ requestId, key, source })` swaps a keyed `Image` without a redraw, folded to the surface's frame rate | Each frame is a state write → re-render → tree sent to the client: a few fps at best |
 | Pointer and keys | `Client` surface module: `onPointer` with sub-cell `fine` coordinates (documented for "a module showing another program's pixels"), `onKey`, `post` → `ui.message` | `Client` runs in a sandboxed frame: whole cells only (no `fine`), pointer capture from press to release. Its region is as tall as what the module draws, capped by the `Client`'s own height, which never stretches it |
 | Talking to a helper | `$.process.spawn` (text stdout; the child and every process descending from it die with the module), `$.process.run`, `$.http.fetch` with `socketPath` (HTTP over a Unix socket), `$.fs` | same |
-| Claude-facing tools | `$.tool.register` → `mcp__android-emulator__<name>`, served by a `tool.call` hook | same |
+| Claude-facing tools | `$.tool.register` → `mcp__android-emulator__<name>`, served by a `tool.call` hook; a result in Messages API blocks reaches the model as is, images included | same |
 
 Consequences:
 
@@ -105,7 +105,9 @@ emulator ──gRPC streamScreenshot / sendTouch / sendKey──┐
                        hooks module (this mod)  ─────────────┘
                          • /emulator: starts the bridge, answers with the live view's URL, asks
                            Claude to open it in the built-in browser pane ($.prompt.submit)
-                         • $.tool.register: screenshot, tap, swipe, text, key, launch, open_url
+                         • $.tool.register: one `emulator` tool, an action per call (start,
+                           screenshot, tap, swipe, text, button, open_url, launch, logs,
+                           settings, rotate), each a call to the bridge's HTTP API
 
 built-in browser pane ──http://127.0.0.1:<port>──▶ the live view
 ```
@@ -131,9 +133,9 @@ One PR per item, each reviewed before the next starts.
    pane. Drops the in-pane live view, the terminal code and `prototypes/live-helper`.
 5. **Live view toolbar**: rotate, screenshot, screen recording, power, App info, shut down.
 6. **Device settings**: dark theme, font size, display size, language, reset.
-7. **Claude tools**: an `android` tool mirroring the iOS Simulator's actions (screenshot, tap,
-   swipe, text, key, launch, open_url, logs) over the bridge's HTTP API; whether a plugin tool
-   result can carry an image block is unverified.
+7. **Claude tools**: an `emulator` tool mirroring the iOS Simulator's actions (start, screenshot,
+   tap, swipe, text, button, launch, open_url, logs) plus the settings and rotation, over the
+   bridge's HTTP API.
 8. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and cross-compiled binaries),
    README, public repository.
 
@@ -168,6 +170,17 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
   until Shut down, and the next `/emulator` shows it again. The bridge boots it through a launcher
   that exits at once, so the engine's kill of the bridge's process tree spares it.
 
+- **One tool for Claude, an action per call**, as the iOS Simulator's `control` tool is: one
+  schema in the prompt rather than a dozen, and the description says how the actions fit together
+  (screenshot first, coordinates in its pixels). It is listed up front (`isDeferred: false`) so
+  Claude reaches for it without a search.
+- **Claude's coordinates are the screenshot's pixels.** The screenshot is the upright screen scaled
+  so its long side fits the model's image budget, JPEG rather than PNG (a fraction of the size);
+  the bridge maps those pixels onto the panel whatever the rotation, so Claude never converts.
+- **Tool results are Messages API blocks** (`{ type: 'image', source: { type: 'base64', … } }`
+  beside a text block): the engine passes a plugin tool's result through unconverted, so an
+  MCP-style `{ type: 'image', data, mimeType }` would reach the API malformed.
+
 ## Open decisions (owner)
 
 - **When to make the repository public.**
@@ -193,3 +206,6 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
 | Prompt from a command | `$.prompt.submit` inside a `command.run` hook is refused (it would wait on the turn the hook holds); from a `$.clock.after(0, …)` timer the hook starts, it queues a model turn after the command. End to end in a headless session: `/emulator` built and ran the bridge, the prompt started a turn, Start booted Pixel_7 under launchd (ppid 1), ending the session stopped the bridge and left the emulator running, and the next session's `/emulator` connected to it at once |
 | Toolbar on the real emulator | `setPhysicalModel(ROTATION)` with z + 90° turns Pixel_7 to Android's `ROTATION_90` (landscape, auto-rotate on); its frames then report `LANDSCAPE` and arrive upright, 1200×540 out of a 1200×1200 box. Touches stay in the panel's natural coordinates: a tap at a Settings row's centre, mapped from the landscape picture onto the portrait panel, opened that row. `getScreenshot(PNG)` answers 2400×1080 in landscape. With auto-rotate off the same sensor turn still turns the picture, the app staying portrait on its side. `screenrecord` interrupted with SIGINT leaves a playable MP4; `echo $$; exec screenrecord` prints the pid to interrupt, so a stop leaves any other recording on the device running; `Power` sleeps and wakes the device; `dumpsys activity activities` names the app in front and `cmd package resolve-activity` the launcher |
 | Device settings on the real emulator | `cmd uimode night yes`, `settings put system font_scale`, `wm density` and `cmd locale set-device-locale` each take effect at once, and every failure exits non-zero; `cmd uimode night` names the mode (`auto` and the schedules included), and `dumpsys uimode`'s `mComputedNightMode` whether the dark theme is on now. `cmd locale list-device-locales` lists every locale ICU knows, numbering-system variants (`-u-nu-latn`) included, and an unknown `cmd` subcommand prints to stdout and exits 255. Display size's own + and − buttons in Settings step through exactly the densities DisplayDensityUtils' arithmetic gives: 356, 420, 460, 500, 540 for a 420 dpi, 1080 px wide panel |
+| Image results from a plugin tool | A plugin's tool is served through a loopback MCP server; a `tool.call` result that is a string arrives as text, and an array of Messages API blocks arrives as a tool_result holding those blocks, a base64 image among them. An MCP-style image block passes through unconverted. Measured by pointing a headless session (`ANTHROPIC_BASE_URL`) at a local fake Messages API that scripts the tool calls and logs each request body |
+| Claude's tool on the real emulator | The same fake API scripted start, screenshot, Home, a swipe, settings, logs and an off-screen tap against Pixel_7: each answered as expected and the JPEG reached the request as an image block. It caught a race: a bridge just started reported no emulator before it had looked, so start tried to boot a second one; `/status` now waits for that first look |
+| `$.http.fetch` on a slow answer | A throwaway mod fetched from a server that answers after 30 s: the fetch was aborted at 30 s with `no complete answer within 30000ms`. The bridge's boot wait answers well inside that, and a cold boot from the tool (snapshot boot) finished inside a single wait |

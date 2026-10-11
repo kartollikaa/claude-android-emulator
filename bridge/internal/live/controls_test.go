@@ -21,7 +21,7 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 )
 
-// The fake adb logs calls, keeps device files in device/, records until SIGINT and runs other shell commands through sh with device-bin/ first; offline, broken, limit and pull-time files steer it.
+// The fake adb logs calls, keeps device files in device/, records until SIGINT and runs other shell commands through sh with device-bin/ first; offline, broken, limit, pull-time and launchable files steer it.
 const fakeADB = `#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -45,13 +45,21 @@ shell)
   am) ;;
   cmd)
     if [ "$3" = package ]; then
-      printf 'priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.google.android.apps.nexuslauncher/.NexusLauncherActivity\n'
+      for last; do :; done
+      case "$*" in
+      *category.HOME*) printf 'priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.google.android.apps.nexuslauncher/.NexusLauncherActivity\n' ;;
+      *category.LAUNCHER*)
+        if grep -qx "$last" "$d/launchable" 2>/dev/null; then printf 'priority=0 preferredOrder=0\n%s/.MainActivity\n' "$last"
+        else echo "No activity found"; fi ;;
+      esac
     else shift; PATH="$d/device-bin:$PATH" sh -c "$*"; fi ;;
   *) shift; PATH="$d/device-bin:$PATH" sh -c "$*" ;;
   esac ;;
 pull)
   [ -f "$d/pull-time" ] && sleep "$(cat "$d/pull-time")"
   cp "$d/device/$(basename "$2")" "$3" ;;
+install) echo "Success" ;;
+logcat) echo "logcat $*" ;;
 esac
 `
 

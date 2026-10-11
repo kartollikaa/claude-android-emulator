@@ -30,6 +30,14 @@ and Use, the page) describes only that flow; commands belong under the README's 
 - A hook's own time is capped (`HookBudget`); waiting on a plain promise counts, a `$` call does not.
 - Never write frames, builds or other churn into the plugin folder: the session hot-reloads on every
   change there. They go under `$TMPDIR/claude-android-emulator/`.
+- A plugin tool's result reaches the API unconverted: an image is a Messages API block
+  (`{ type: 'image', source: { type: 'base64', media_type, data } }`), never MCP's `{ data, mimeType }`.
+- A `tool.call` matcher names the tool as a literal, or the validator cannot tell which tool it serves;
+  the tool's input type is merged into `McpToolInputs` in `hooks/tool.ts` so the matcher type-checks.
+- `$.http.fetch` aborts a request that has no complete answer within its own limit (see the spike
+  log): a bridge route the mod long-polls answers before it.
+- To see what a headless session sends the model, point `ANTHROPIC_BASE_URL` at a local fake Messages
+  API that scripts the tool calls and logs the request bodies; real headless turns need a login.
 - The validator follows `$` only into functions declared in the hooks module itself: every function
   taking `$` lives in `hooks/register.ts`; other files hold pure helpers.
 
@@ -78,4 +86,5 @@ leave the bridge's process tree, run detached in a session of their own, and log
 `$TMPDIR/claude-android-emulator/`, never a pipe. Screenshots and recordings default to the user's
 Desktop, so every test sets `CapturesDir` to a temporary folder. `adb shell` joins its arguments
 into one line the device's shell parses, so any value from a request is validated before it reaches
-adb (package names, language tags).
+adb (package names, language tags), and a free-form one (a URL, an activity) goes through
+`adb.Quote`.

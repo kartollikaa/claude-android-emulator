@@ -60,3 +60,25 @@ func TestSDKLookupOrder(t *testing.T) {
 		t.Errorf("Find with no emulator anywhere = %v, want a NotFoundError naming both places", err)
 	}
 }
+
+func TestAAPT2IsTheNewestBuildTools(t *testing.T) {
+	root := t.TempDir()
+	if got := (SDK{Root: root, goos: "darwin"}).AAPT2(); got != "" {
+		t.Errorf("an SDK without build-tools answered %q", got)
+	}
+	for _, path := range []string{"9.0.0/aapt2", "36.1.0/aapt2", "35.0.1/aapt2", "36.0.0/aapt2.exe", "34.0.0/aapt2.exe"} {
+		file := filepath.Join(root, "build-tools", path)
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := (SDK{Root: root, goos: "darwin"}).AAPT2(), filepath.Join(root, "build-tools", "36.1.0", "aapt2"); got != want {
+		t.Errorf("AAPT2 = %q, want %q", got, want)
+	}
+	if got, want := (SDK{Root: root, goos: "windows"}).AAPT2(), filepath.Join(root, "build-tools", "36.0.0", "aapt2.exe"); got != want {
+		t.Errorf("AAPT2 on Windows = %q, want %q", got, want)
+	}
+}

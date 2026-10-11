@@ -1,6 +1,9 @@
 package adb
 
-import "testing"
+import (
+	"os/exec"
+	"testing"
+)
 
 func TestForegroundPackage(t *testing.T) {
 	for _, step := range []struct{ activities, want string }{
@@ -22,5 +25,31 @@ func TestResolvedPackage(t *testing.T) {
 	}
 	if got := ResolvedPackage("No activity found\n"); got != "" {
 		t.Errorf("ResolvedPackage of no match = %q, want none", got)
+	}
+}
+
+func TestResolvedComponent(t *testing.T) {
+	for resolved, want := range map[string]string{
+		"priority=0 match=0x108000\ncom.example/.MainActivity\n": "com.example/.MainActivity",
+		"com.example/com.example.ui.Main$Alias":                  "com.example/com.example.ui.Main$Alias",
+		"No activity found\n":                                    "",
+		"com.example/.Main; reboot":                              "",
+		"not a package/.Main":                                    "",
+	} {
+		if got := ResolvedComponent(resolved); got != want {
+			t.Errorf("ResolvedComponent(%q) = %q, want %q", resolved, got, want)
+		}
+	}
+}
+
+func TestQuoteKeepsOneWordForTheShell(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX shell to read the quoting")
+	}
+	for _, word := range []string{"plain", "a b", "it's", "''", "$HOME `id` \"x\" \\ ; &"} {
+		output, err := exec.Command("sh", "-c", "printf %s "+Quote(word)).Output()
+		if err != nil || string(output) != word {
+			t.Errorf("sh read Quote(%q) as %q (%v)", word, output, err)
+		}
 	}
 }
