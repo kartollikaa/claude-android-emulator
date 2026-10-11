@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 )
@@ -195,11 +197,11 @@ func TestLaunchedEmulatorIsDetached(t *testing.T) {
 
 	eventually(t, func() bool { return len(launches(root)) == 1 }, "the emulator being launched")
 	pid := launches(root)[0].pid
-	session, err := syscall.Getsid(pid)
+	session, err := unix.Getsid(pid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownSession, _ := syscall.Getsid(0)
+	ownSession, _ := unix.Getsid(0)
 	if session == ownSession || session != pid {
 		t.Errorf("emulator %d runs in session %d, the bridge in %d; want a session of its own", pid, session, ownSession)
 	}
