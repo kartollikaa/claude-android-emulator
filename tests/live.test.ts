@@ -96,6 +96,23 @@ describe('live mode on desktop', () => {
     await ui.unmount()
   })
 
+  test('the rulers measure the code-font cell and size the touch overlay to the picture', async ($, on) => {
+    mock.clock(on)
+    fakeHelper(on, [])
+    const ui = await $.ui.mount(PANE)
+    await ui.press({ key: 'live' })
+
+    await ui.resize({ in: 'ruler-x', columns: 36, rows: 1 })
+    await ui.resize({ in: 'ruler-y', columns: 1, rows: 32 })
+    await ui.advance(600)
+
+    const touch = JSON.stringify(await ui.find({ type: 'Client', key: 'touch' }))
+    expect(touch).toMatch(/"width":36/)
+    expect(touch).toMatch(/"height":32/)
+    await ui.press({ key: 'live' })
+    await ui.unmount()
+  })
+
   test('the Home button sends the GoHome key', async ($, on) => {
     mock.clock(on)
     const posted: unknown[] = []

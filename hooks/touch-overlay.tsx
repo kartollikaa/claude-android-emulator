@@ -44,7 +44,7 @@ const TouchOverlay: ClientModule<null, boolean> = (_props, surface) => {
 
   const { Box } = surface.elements
 
-  return <Box width="100%" height="100%" />
+  return <Box width="100%" height="100%" borderStyle="round" borderDimColor />
 }
 
 export default TouchOverlay

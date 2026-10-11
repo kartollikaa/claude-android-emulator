@@ -11,11 +11,15 @@ import {
 } from './adb'
 import type { LiveMode } from '../types'
 import {
+  DEFAULT_CELL_METRICS,
   FILE_POLL_MS,
   HELPER,
   POLL_MS,
   PROBE_VARIANTS,
   RATE_WINDOW_MS,
+  displaySize,
+  measuredMetrics,
+  overlayCells,
   parseFileFrame,
   parseLiveFrame,
   streamMarkdown,
@@ -44,6 +48,7 @@ const liveMode = atom({ plugin: 'android-emulator', key: 'liveMode' } as const, 
 const liveFile = atom({ plugin: 'android-emulator', key: 'liveFile' } as const, null)
 const isProbing = atom({ plugin: 'android-emulator', key: 'isProbing' } as const, false)
 const touchStatus = atom({ plugin: 'android-emulator', key: 'touchStatus' } as const, null)
+const cellMetrics = atom({ plugin: 'android-emulator', key: 'cellMetrics' } as const, DEFAULT_CELL_METRICS)
 
 let poller: Timer | null = null
 let isFetching = false
@@ -269,7 +274,17 @@ export const register: Register = on => {
     if (e.requestId !== PANE) return {}
     const data = (e.data ?? {}) as Record<string, unknown>
     try {
-      if (data.type === 'overlay') {
+      if (data.type === 'ruler' && (e.element === 'ruler-x' || e.element === 'ruler-y')) {
+        const shot = await read($, liveFrame)
+        if (shot !== null) {
+          const ruler = e.element
+          const cells = { columns: Number(data.columns), rows: Number(data.rows) }
+          await update($, cellMetrics, metrics =>
+            measuredMetrics(metrics, ruler, displaySize(shot.width, shot.height), cells),
+          )
+        }
+        await sendInput($, { ...data, type: 'debug', kind: e.element, surface: e.surface })
+      } else if (data.type === 'overlay') {
         await update($, touchStatus, () => `Touch: ready, overlay ${data.columns}x${data.rows} cells`)
         await sendInput($, { ...data, type: 'debug', kind: data.type, surface: e.surface })
       } else if (data.type === 'pointer') {
@@ -343,24 +358,30 @@ export const register: Register = on => {
         </Box>
       )
     } else if (live && liveShot !== null && e.surface !== 'terminal') {
-      const shown = Math.min(liveShot.height, PREVIEW_MAX_HEIGHT)
-      const width = Math.round((liveShot.width * shown) / liveShot.height)
+      const display = displaySize(liveShot.width, liveShot.height)
       const svg = screenSvg(liveShot.base64, liveShot.width, liveShot.height)
       if (svg === null) {
         screen = <Text dimColor>The live frame is too large to draw here.</Text>
       } else if (e.surface === 'desktop') {
         const { Client, Svg } = $.ui.resolve(e)
+        const cells = overlayCells(display, await read($, cellMetrics))
         screen = (
-          <Box position="relative" alignSelf="flex-start">
-            <Svg source={svg} alt="Android screen" width={width} height={shown} />
-            <Box position="absolute" top={0} left={0} width="100%" height="100%">
-              <Client key="touch" module="./touch-overlay.tsx" width="100%" height="100%" />
+          <Box flexDirection="column" alignSelf="flex-start">
+            <Box flexDirection="row">
+              <Box position="relative">
+                <Svg source={svg} alt="Android screen" width={display.width} height={display.height} />
+                <Box position="absolute" top={0} left={0}>
+                  <Client key="touch" module="./touch-overlay.tsx" width={cells.columns} height={cells.rows} />
+                </Box>
+              </Box>
+              <Client key="ruler-y" module="./ruler.tsx" width={1} />
             </Box>
+            <Client key="ruler-x" module="./ruler.tsx" width="100%" height={1} />
           </Box>
         )
       } else {
         const { Svg } = $.ui.resolve(e)
-        screen = <Svg source={svg} alt="Android screen" width={width} height={shown} />
+        screen = <Svg source={svg} alt="Android screen" width={display.width} height={display.height} />
       }
     } else if (shot !== null && e.surface === 'terminal') {
       const { Image } = $.ui.resolve(e)
