@@ -8,12 +8,11 @@ built-in iOS Simulator panel is the reference experience.
 
 ## Where it stands
 
-`v0.1.0` is a walking skeleton plus prototypes: `/emulator` opens a pane that lists adb devices,
-shows a screenshot, and can go live through the throwaway Node helper in `prototypes/live-helper`.
-The desktop live view is settled on the app's built-in browser pane (smooth, interactive); the mod
-pane tops out at a few frames per second. The Go bridge in `bridge/` serves that live view, lists
-the SDK's virtual devices and boots one from a Start button; for now the bridge itself is run by
-hand. See the spike log at the end.
+`/emulator` runs the Go bridge in `bridge/` (built from source until the release slice ships
+binaries) and asks Claude to open its live view in the app's built-in browser pane. The page lists
+the SDK's virtual devices, boots one from a Start button and shows it live and touchable; the
+emulator outlives the session. The in-pane live view, the terminal code and the prototype helper
+are gone. See the spike log at the end.
 
 ## Findings
 
@@ -24,7 +23,7 @@ hand. See the spike log at the end.
 | Pixels | `Image`: PNG/RGBA bytes, or a **file or POSIX shared-memory name another local process wrote**, read by the terminal itself (kitty graphics protocol: Ghostty, kitty) — the pixels never cross `$` | No `Image`, no `Raster`. Only `Svg`, source capped at 131 072 characters → a JPEG data URI of roughly 95 KB |
 | Frame rate | `$.ui.blit({ requestId, key, source })` swaps a keyed `Image` without a redraw, folded to the surface's frame rate | Each frame is a state write → re-render → tree sent to the client: a few fps at best |
 | Pointer and keys | `Client` surface module: `onPointer` with sub-cell `fine` coordinates (documented for "a module showing another program's pixels"), `onKey`, `post` → `ui.message` | `Client` runs in a sandboxed frame: whole cells only (no `fine`), pointer capture from press to release. Its region is as tall as what the module draws, capped by the `Client`'s own height, which never stretches it |
-| Talking to a helper | `$.process.spawn` (text stdout, child dies with the module), `$.process.run`, `$.http.fetch` with `socketPath` (HTTP over a Unix socket), `$.fs` | same |
+| Talking to a helper | `$.process.spawn` (text stdout; the child and every process descending from it die with the module), `$.process.run`, `$.http.fetch` with `socketPath` (HTTP over a Unix socket), `$.fs` | same |
 | Claude-facing tools | `$.tool.register` → `mcp__android-emulator__<name>`, served by a `tool.call` hook | same |
 
 Consequences:
@@ -102,8 +101,8 @@ emulator ──gRPC streamScreenshot / sendTouch / sendKey──┐
                                   ▲ $.process.spawn          ▲ $.http.fetch
                                   │                          │
                        hooks module (this mod)  ─────────────┘
-                         • /emulator: starts the bridge, opens a status pane, asks Claude to
-                           open the live view in the built-in browser pane ($.prompt.submit)
+                         • /emulator: starts the bridge, answers with the live view's URL, asks
+                           Claude to open it in the built-in browser pane ($.prompt.submit)
                          • $.tool.register: screenshot, tap, swipe, text, key, launch, open_url
 
 built-in browser pane ──http://127.0.0.1:<port>──▶ the live view
@@ -126,8 +125,8 @@ One PR per item, each reviewed before the next starts.
    shows them with a Start button, boots one with `-qt-hide-window -gpu host -grpc <free port>`,
    shows boot progress, then the live screen.
 4. **Mod as launcher**: `/emulator` starts the bridge (a prebuilt binary for the user's platform)
-   and stops it with the session, a status pane, and the prompt that has Claude open the live view
-   in the browser pane. Drops the in-pane live view, the terminal code and `prototypes/live-helper`.
+   and stops it with the session, and the prompt that has Claude open the live view in the browser
+   pane. Drops the in-pane live view, the terminal code and `prototypes/live-helper`.
 5. **Live view toolbar**: rotate, screenshot, screen recording, power, App info, shut down.
 6. **Device settings**: dark theme, font size, display size, language, reset.
 7. **Claude tools**: an `android` tool mirroring the iOS Simulator's actions (screenshot, tap,
@@ -161,6 +160,12 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
   `main`'s history (the release slice picks the branch or tag the marketplace entry points to);
   `go run` is for development only.
 
+- **No status pane.** The live view in the browser pane is the only UI: `/emulator`'s output names
+  the live view's URL or what went wrong, and a toast says when the bridge stops.
+- **The emulator outlives the session**, as Android Studio's and the iOS Simulator's do: it runs
+  until Shut down, and the next `/emulator` shows it again. The bridge boots it through a launcher
+  that exits at once, so the engine's kill of the bridge's process tree spares it.
+
 ## Open decisions (owner)
 
 - **When to make the repository public.**
@@ -182,3 +187,5 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
 | Ghostty `Image`, `Client` over `Image` | Not run: the terminal is out of scope |
 | Start from the live view | `emulator -avd Pixel_7 -qt-hide-window -gpu host -grpc <free port> -grpc-use-token`, detached in its own session: the discovery file carries `avd.id` and `grpc.token`, the bridge connects within seconds, and `getStatus().booted` turns true about 15 s after Start (snapshot boot). A SIGTERM to the bridge alone leaves the emulator running; killing the bridge's whole process tree takes the emulator with it, which matters for how the mod stops the bridge. A killed emulator leaves its `pid_<pid>.ini` behind, so "running" also checks that the pid is alive. With the panel size from `getStatus`, the bridge connects about a second after Start and the page shows "Booting" for the rest. `setVmState(SHUTDOWN)` powers it off and removes its file |
 | Display off | `Power` on API 37 streams full-size black frames; the empty 0×0 image the proto promises for an inactive display was not seen. The bridge keeps the last stream size and the page blacks out the screen if one arrives |
+| Engine kill of a mod's child | When the module unloads, the engine sends SIGTERM to a `$.process.spawn` child and kills every process descending from it, including one in a session of its own (`setsid`); a process whose parent already exited, reparented to launchd, survives. Measured with a throwaway mod under `claude -p --plugin-dir` |
+| Prompt from a command | `$.prompt.submit` inside a `command.run` hook is refused (it would wait on the turn the hook holds); from a `$.clock.after(0, …)` timer the hook starts, it queues a model turn after the command. End to end in a headless session: `/emulator` built and ran the bridge, the prompt started a turn, Start booted Pixel_7 under launchd (ppid 1), ending the session stopped the bridge and left the emulator running, and the next session's `/emulator` connected to it at once |
