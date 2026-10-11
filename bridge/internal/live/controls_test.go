@@ -21,7 +21,7 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 )
 
-// The fake adb logs calls to calls, keeps device files in device/ and records until SIGINT; files named offline, broken, limit and pull-time steer it.
+// The fake adb logs calls, keeps device files in device/, records until SIGINT and runs other shell commands through sh with device-bin/ first; offline, broken, limit and pull-time files steer it.
 const fakeADB = `#!/bin/sh
 d=$(dirname "$0")
 echo "$*" >> "$d/calls"
@@ -42,7 +42,12 @@ shell)
   kill*) sh -c "$2" ;;
   rm) rm -f "$d/device/$(basename "$4")" ;;
   dumpsys) cat "$d/activities" ;;
-  cmd) printf 'priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.google.android.apps.nexuslauncher/.NexusLauncherActivity\n' ;;
+  am) ;;
+  cmd)
+    if [ "$3" = package ]; then
+      printf 'priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.google.android.apps.nexuslauncher/.NexusLauncherActivity\n'
+    else shift; PATH="$d/device-bin:$PATH" sh -c "$*"; fi ;;
+  *) shift; PATH="$d/device-bin:$PATH" sh -c "$*" ;;
   esac ;;
 pull)
   [ -f "$d/pull-time" ] && sleep "$(cat "$d/pull-time")"
