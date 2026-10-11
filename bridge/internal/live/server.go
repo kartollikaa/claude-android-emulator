@@ -35,7 +35,7 @@ func Listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 }
 
-// Handler serves the live view (/), its socket (/live), /status, /input, /avds, /emulators/start and /shutdown.
+// Handler serves the live view (/), its socket (/live), /status, /input, the AVDs and their start, and the toolbar's controls.
 func (b *Bridge) Handler() http.Handler {
 	routes := http.NewServeMux()
 	routes.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
@@ -55,6 +55,13 @@ func (b *Bridge) Handler() http.Handler {
 	routes.HandleFunc("GET /avds", b.serveAVDs)
 	routes.HandleFunc("POST /emulators/start", b.serveStart)
 	routes.HandleFunc("POST /shutdown", b.serveShutdown)
+	routes.HandleFunc("POST /rotate", serveAction(inputTimeout, func(ctx context.Context, request rotateRequest) (any, error) {
+		return nil, b.Rotate(ctx, request.Direction)
+	}))
+	routes.HandleFunc("POST /screenshot", serveAction(inputTimeout, answeringPath(b.Screenshot)))
+	routes.HandleFunc("POST /recording/start", serveAction(sdkTimeout, answeringNothing(b.StartRecording)))
+	routes.HandleFunc("POST /recording/stop", serveAction(recordingStopTimeout, answeringPath(b.StopRecording)))
+	routes.HandleFunc("POST /app-settings", serveAction(sdkTimeout, answeringNothing(b.OpenAppSettings)))
 
 	return guardLocal(routes)
 }
@@ -183,6 +190,60 @@ func (b *Bridge) serveShutdown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+type rotateRequest struct {
+	Direction string `json:"direction"`
+}
+
+// serveAction decodes the JSON body, runs act within timeout and answers its result as JSON, or 204 when it has none.
+func serveAction[Request any](timeout time.Duration, act func(context.Context, Request) (any, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request Request
+		if !readJSON(w, r, &request) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		answer, err := act(ctx, request)
+		if err != nil {
+			http.Error(w, err.Error(), controlErrorStatus(err))
+			return
+		}
+		if answer == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		json.NewEncoder(w).Encode(answer)
+	}
+}
+
+func answeringNothing(act func(context.Context) error) func(context.Context, struct{}) (any, error) {
+	return func(ctx context.Context, _ struct{}) (any, error) { return nil, act(ctx) }
+}
+
+func answeringPath(capture func(context.Context) (string, error)) func(context.Context, struct{}) (any, error) {
+	return func(ctx context.Context, _ struct{}) (any, error) {
+		path, err := capture(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"path": path}, nil
+	}
+}
+
+func controlErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, ErrBadInput):
+		return http.StatusBadRequest
+	case errors.Is(err, ErrNoEmulator), errors.Is(err, ErrNoADB):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, ErrRecording), errors.Is(err, ErrNotRecording), errors.Is(err, ErrHomeInFront):
+		return http.StatusConflict
+	}
+
+	return http.StatusBadGateway
 }
 
 func sdkErrorStatus(err error) int {

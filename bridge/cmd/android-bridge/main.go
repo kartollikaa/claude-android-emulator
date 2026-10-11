@@ -23,9 +23,10 @@ import (
 func main() {
 	sdk.RunLauncherIfAsked()
 	port := flag.Int("port", 7357, "port of the live view on 127.0.0.1; 0 picks a free one")
-	streamWidth := flag.Int("stream-width", 540, "width in pixels the emulator streams frames at")
+	streamWidth := flag.Int("stream-width", 540, "the streamed frames' short side in pixels, their width in portrait")
 	discoveryDir := flag.String("discovery-dir", discovery.DefaultDir(), "where running emulators write pid_<pid>.ini")
 	sdkDir := flag.String("sdk", "", "Android SDK folder (default: ANDROID_HOME, ANDROID_SDK_ROOT, then the platform's default)")
+	capturesDir := flag.String("captures-dir", "", "where screenshots and screen recordings are saved (default: the Desktop)")
 	verbose := flag.Bool("v", false, "log debug detail")
 	flag.Parse()
 
@@ -35,7 +36,7 @@ func main() {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	config := live.Config{DiscoveryDir: *discoveryDir, StreamWidth: *streamWidth, Logger: logger}
+	config := live.Config{DiscoveryDir: *discoveryDir, StreamWidth: *streamWidth, CapturesDir: *capturesDir, Logger: logger}
 	if *sdkDir != "" {
 		config.SDKCandidates = []string{*sdkDir}
 	}

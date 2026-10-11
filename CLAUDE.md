@@ -75,4 +75,5 @@ and the page's refusal to be framed (another site could steer clicks onto the em
 carries only the `{"liveView": …}` line the mod reads; logs go to stderr. Emulators it boots keep
 `-grpc-use-token` (their gRPC port listens on every interface), start through the launcher so they
 leave the bridge's process tree, run detached in a session of their own, and log to a file under
-`$TMPDIR/claude-android-emulator/`, never a pipe.
+`$TMPDIR/claude-android-emulator/`, never a pipe. Screenshots and recordings default to the user's
+Desktop, so every test sets `CapturesDir` to a temporary folder.

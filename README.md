@@ -4,9 +4,10 @@ A Claude Code mod that runs an Android emulator inside the Claude desktop app's 
 touchable, in the app's built-in browser pane. It is the Android counterpart of the desktop app's
 built-in iOS Simulator panel.
 
-> **Status: in development.** `/emulator` opens the live view and its Start button boots a virtual
-> device. Next: a toolbar (rotate, screenshot, recording), device settings, tools Claude can drive
-> the emulator with, and a release with prebuilt bridges. See [docs/plan.md](docs/plan.md).
+> **Status: in development.** `/emulator` opens the live view, its Start button boots a virtual
+> device, and a toolbar rotates it, takes screenshots and recordings, and opens App info. Next:
+> device settings, tools Claude can drive the emulator with, and a release with prebuilt bridges.
+> See [docs/plan.md](docs/plan.md).
 
 ## Requirements
 
@@ -33,7 +34,16 @@ in the desktop app's local sessions.
 1. Type `/emulator`. Claude opens the live view in the browser pane.
 2. Press **Start** on a virtual device. The page shows the boot, then the screen.
 3. Click to tap, drag to swipe, click the screen and type to send keys (Esc is Back). Back, Home and
-   Recents sit under the screen; the power button shuts the emulator down after a second press.
+   Recents sit under the screen; the power button there shuts the emulator down after a second press.
+
+The toolbar above the screen:
+
+- **Rotate left** and **Rotate right** turn the device a quarter; the screen follows in the pane.
+- **Screenshot** saves a full-resolution PNG to the Desktop.
+- **Record** records the screen and shows the time; press it again to stop and save the MP4 to the
+  Desktop. The device stops a long recording by itself, and that one is saved too.
+- **App info** opens the system App info screen of the app in front.
+- **Power** turns the screen off and on, as the side button does.
 
 The emulator keeps running when the session ends, as Android Studio's does; the next `/emulator`
 shows it again.
@@ -88,11 +98,20 @@ reconnects when one restarts.
 The bridge's flags:
 
 - `-port`: the live view's port (0 picks a free one).
-- `-stream-width`: the width of the streamed frames.
+- `-stream-width`: the streamed frames' short side, their width in portrait.
 - `-sdk`: the Android SDK folder; otherwise `ANDROID_HOME`, `ANDROID_SDK_ROOT`, then the platform's
   default.
 - `-discovery-dir`: where emulators write `pid_<pid>.ini`.
+- `-captures-dir`: where screenshots and recordings are saved; otherwise the Desktop.
 - `-v`: debug logs.
+
+The toolbar's routes, each a `POST` with a JSON body: `/rotate` (`{"direction": "left"}` or
+`"right"`), `/screenshot` and `/recording/stop` (both answer `{"path": …}`), `/recording/start` and
+`/app-settings`. Rotation goes through the emulator's rotation sensor and screenshots through gRPC;
+recording (`screenrecord`) and App info use adb from the SDK's `platform-tools`, or from `PATH`.
+Frames are drawn upright, so the page sends touches in the upright picture and the bridge turns them
+back onto the panel. `/status` carries the `rotation`, `recordingSince` while recording, the
+newest saved file as `saved`, and `recordingError` when a recording could not be saved.
 
 The page serves only this machine: the bridge listens on 127.0.0.1 and refuses requests whose
 `Host` or `Origin` is not its own, so no other web page can read the screen or drive the emulator.

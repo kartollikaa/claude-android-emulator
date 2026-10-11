@@ -183,9 +183,7 @@ func (b *Bridge) giveUp(id uint64, pid int, avd, logPath string) {
 
 // Shutdown asks the connected emulator to power off; the bridge then sees it go away.
 func (b *Bridge) Shutdown(ctx context.Context) error {
-	b.mu.Lock()
-	conn := b.conn
-	b.mu.Unlock()
+	conn := b.connection()
 	if conn == nil {
 		return ErrNoEmulator
 	}

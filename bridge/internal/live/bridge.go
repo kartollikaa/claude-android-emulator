@@ -28,18 +28,27 @@ type Config struct {
 	SDKCandidates []string
 	AVDHome       string
 	LogDir        string
+	// CapturesDir is where screenshots and screen recordings are saved.
+	CapturesDir string
+	Now         func() time.Time
 }
 
 // State is what the bridge knows about the emulator, as /status and the live view see it.
 type State struct {
-	Connected bool          `json:"connected"`
-	Booted    bool          `json:"booted"`
-	Serial    string        `json:"serial"`
-	AVD       string        `json:"avd"`
-	Device    emulator.Size `json:"device"`
-	Stream    emulator.Size `json:"stream"`
-	Seq       uint32        `json:"seq"`
-	Launch    Launch        `json:"launch,omitzero"`
+	Connected      bool              `json:"connected"`
+	Booted         bool              `json:"booted"`
+	Serial         string            `json:"serial"`
+	AVD            string            `json:"avd"`
+	Device         emulator.Size     `json:"device"`
+	Stream         emulator.Size     `json:"stream"`
+	Seq            uint32            `json:"seq"`
+	Launch         Launch            `json:"launch,omitzero"`
+	Rotation       emulator.Rotation `json:"rotation"`
+	RecordingSince time.Time         `json:"recordingSince,omitzero"`
+	// RecordingError says why the newest recording was not saved.
+	RecordingError string `json:"recordingError,omitempty"`
+	// Saved is the newest screenshot or recording saved, so the page can say where.
+	Saved string `json:"saved,omitempty"`
 }
 
 // Message is one input from the live view or the mod; a touch's x and y are screen fractions.
@@ -63,13 +72,14 @@ var (
 type Bridge struct {
 	config Config
 
-	mu       sync.Mutex
-	conn     *emulator.Conn
-	state    State
-	launch   Launch
-	launchID uint64
-	latest   *emulator.Frame
-	viewers  map[chan struct{}]struct{}
+	mu        sync.Mutex
+	conn      *emulator.Conn
+	state     State
+	launch    Launch
+	launchID  uint64
+	latest    *emulator.Frame
+	viewers   map[chan struct{}]struct{}
+	recording *recording
 }
 
 // New makes a bridge; Run connects it.
@@ -99,6 +109,12 @@ func New(config Config) *Bridge {
 	if config.LogDir == "" {
 		config.LogDir = filepath.Join(os.TempDir(), "claude-android-emulator")
 	}
+	if config.CapturesDir == "" {
+		config.CapturesDir = defaultCapturesDir(home)
+	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
 
 	return &Bridge{config: config, viewers: map[chan struct{}]struct{}{}}
 }
@@ -111,7 +127,7 @@ func (b *Bridge) Run(ctx context.Context) {
 			sleep(ctx, b.config.RetryInterval)
 			continue
 		}
-		size := conn.StreamSize(b.config.StreamWidth)
+		size := conn.StreamBox(b.config.StreamWidth)
 		b.attach(conn)
 		b.config.Logger.Info("emulator connected", "serial", conn.Emulator.Serial, "device", conn.Device, "stream", size)
 		streaming, stopStreaming := context.WithCancel(ctx)
@@ -149,7 +165,7 @@ func (b *Bridge) attach(conn *emulator.Conn) {
 	b.mu.Lock()
 	b.conn = conn
 	b.latest = nil
-	b.state = State{Connected: true, Serial: conn.Emulator.Serial, AVD: conn.Emulator.AVD, Device: conn.Device}
+	b.state = b.keepingCaptures(State{Connected: true, Serial: conn.Emulator.Serial, AVD: conn.Emulator.AVD, Device: conn.Device})
 	if b.launch.Phase == launchFailed || b.launch.AVD == conn.Emulator.AVD {
 		b.launch = Launch{}
 	}
@@ -183,9 +199,16 @@ func (b *Bridge) detach() {
 	b.mu.Lock()
 	b.conn = nil
 	b.latest = nil
-	b.state = State{}
+	b.state = b.keepingCaptures(State{})
 	b.mu.Unlock()
 	b.notifyViewers()
+}
+
+// keepingCaptures carries the recording and the newest saved file over a reconnect, which does not end a recording.
+func (b *Bridge) keepingCaptures(state State) State {
+	state.RecordingSince, state.RecordingError, state.Saved = b.state.RecordingSince, b.state.RecordingError, b.state.Saved
+
+	return state
 }
 
 func (b *Bridge) publish(frame emulator.Frame) {
@@ -194,6 +217,7 @@ func (b *Bridge) publish(frame emulator.Frame) {
 	b.state.Seq = frame.Seq
 	if frame.Width > 0 && frame.Height > 0 {
 		b.state.Stream = emulator.Size{Width: frame.Width, Height: frame.Height}
+		b.state.Rotation = frame.Rotation
 	}
 	b.mu.Unlock()
 	b.notifyViewers()
@@ -244,9 +268,7 @@ func (b *Bridge) Input(ctx context.Context, message Message) error {
 	if err != nil {
 		return err
 	}
-	b.mu.Lock()
-	conn := b.conn
-	b.mu.Unlock()
+	conn := b.connection()
 	if conn == nil {
 		return ErrNoEmulator
 	}
