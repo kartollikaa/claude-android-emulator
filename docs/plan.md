@@ -10,8 +10,9 @@ built-in iOS Simulator panel is the reference experience.
 
 `/emulator` runs the Go bridge in `bridge/` (built from source until the release slice ships
 binaries) and asks Claude to open its live view in the app's built-in browser pane. The page lists
-the SDK's virtual devices, boots one from a Start button and shows it live and touchable; the
-emulator outlives the session. The in-pane live view, the terminal code and the prototype helper
+the SDK's virtual devices, boots one from a Start button and shows it live and touchable; a toolbar
+rotates it, saves screenshots and screen recordings, opens App info and presses Power; the emulator
+outlives the session. The in-pane live view, the terminal code and the prototype helper
 are gone. See the spike log at the end.
 
 ## Findings
@@ -189,3 +190,4 @@ Later: physical devices (pinned scrcpy server, H.264 decoded in the bridge, scrc
 | Display off | `Power` on API 37 streams full-size black frames; the empty 0×0 image the proto promises for an inactive display was not seen. The bridge keeps the last stream size and the page blacks out the screen if one arrives |
 | Engine kill of a mod's child | When the module unloads, the engine sends SIGTERM to a `$.process.spawn` child and kills every process descending from it, including one in a session of its own (`setsid`); a process whose parent already exited, reparented to launchd, survives. Measured with a throwaway mod under `claude -p --plugin-dir` |
 | Prompt from a command | `$.prompt.submit` inside a `command.run` hook is refused (it would wait on the turn the hook holds); from a `$.clock.after(0, …)` timer the hook starts, it queues a model turn after the command. End to end in a headless session: `/emulator` built and ran the bridge, the prompt started a turn, Start booted Pixel_7 under launchd (ppid 1), ending the session stopped the bridge and left the emulator running, and the next session's `/emulator` connected to it at once |
+| Toolbar on the real emulator | `setPhysicalModel(ROTATION)` with z + 90° turns Pixel_7 to Android's `ROTATION_90` (landscape, auto-rotate on); its frames then report `LANDSCAPE` and arrive upright, 1200×540 out of a 1200×1200 box. Touches stay in the panel's natural coordinates: a tap at a Settings row's centre, mapped from the landscape picture onto the portrait panel, opened that row. `getScreenshot(PNG)` answers 2400×1080 in landscape. `screenrecord` interrupted with SIGINT leaves a playable MP4; `Power` sleeps and wakes the device; `dumpsys activity activities` names the app in front and `cmd package resolve-activity` the launcher |
