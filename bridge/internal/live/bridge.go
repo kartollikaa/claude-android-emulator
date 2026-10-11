@@ -136,7 +136,7 @@ func (b *Bridge) Run(ctx context.Context) {
 		}
 		b.attach(conn)
 		b.markLooked()
-		b.config.Logger.Info("emulator connected", "serial", conn.Serial(), "device", conn.Panel())
+		b.config.Logger.Info("device connected", "serial", conn.Serial(), "device", conn.Panel())
 		streaming, stopStreaming := context.WithCancel(ctx)
 		go b.watchBoot(streaming, conn)
 		err := conn.Stream(streaming, b.config.StreamWidth, b.publish)
@@ -144,7 +144,7 @@ func (b *Bridge) Run(ctx context.Context) {
 		b.detach()
 		conn.Close()
 		if ctx.Err() == nil {
-			b.config.Logger.Info("emulator went away", "serial", conn.Serial(), "reason", err)
+			b.config.Logger.Info("device went away", "serial", conn.Serial(), "reason", err)
 			sleep(ctx, b.config.RetryInterval)
 		}
 	}

@@ -60,11 +60,11 @@ type SettingsChange struct {
 
 // ReadSettings reads the device's configuration through adb.
 func (b *Bridge) ReadSettings(ctx context.Context) (Settings, error) {
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return Settings{}, err
 	}
-	answer, err := device.Run(ctx, "shell", readSettingsScript)
+	answer, err := shell.Run(ctx, "shell", readSettingsScript)
 	if err != nil {
 		return Settings{}, err
 	}
@@ -73,12 +73,12 @@ func (b *Bridge) ReadSettings(ctx context.Context) (Settings, error) {
 
 // DeviceLocales lists the language tags the device can switch to.
 func (b *Bridge) DeviceLocales(ctx context.Context) ([]string, error) {
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return nil, err
 	}
 	// As in readLocaleScript, a device without the command answers no tags.
-	answer, err := device.Run(ctx, "shell", "cmd locale list-device-locales 2>/dev/null; true")
+	answer, err := shell.Run(ctx, "shell", "cmd locale list-device-locales 2>/dev/null; true")
 	if err != nil {
 		return nil, err
 	}
@@ -96,12 +96,12 @@ func (b *Bridge) ChangeSettings(ctx context.Context, change SettingsChange) (Set
 	if err := change.validate(); err != nil {
 		return Settings{}, err
 	}
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return Settings{}, err
 	}
 	if change.Locale != nil {
-		current, err := device.Run(ctx, "shell", readLocaleScript)
+		current, err := shell.Run(ctx, "shell", readLocaleScript)
 		if err != nil {
 			return Settings{}, err
 		}
@@ -110,7 +110,7 @@ func (b *Bridge) ChangeSettings(ctx context.Context, change SettingsChange) (Set
 		}
 	}
 	// One shell line stops at the first command that fails; every value in it was validated above.
-	if _, err := device.Run(ctx, "shell", strings.Join(change.commands(), " && ")); err != nil {
+	if _, err := shell.Run(ctx, "shell", strings.Join(change.commands(), " && ")); err != nil {
 		return Settings{}, err
 	}
 

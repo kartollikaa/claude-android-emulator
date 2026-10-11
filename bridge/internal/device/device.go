@@ -3,13 +3,9 @@ package device
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 )
-
-// ErrNoShutdown is returned by Shutdown for a device the bridge cannot power off.
-var ErrNoShutdown = errors.New("this device cannot be shut down from here")
 
 // Device is one connected Android device: its screen as a stream of frames, its input, and its lifecycle.
 type Device interface {

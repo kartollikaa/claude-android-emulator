@@ -177,11 +177,11 @@ func (b *Bridge) OpenURL(ctx context.Context, link string) error {
 	if err != nil || parsed.Scheme == "" {
 		return fmt.Errorf("%w: %q is not a URL with a scheme", ErrBadInput, link)
 	}
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return err
 	}
-	_, err = device.Run(ctx, "shell", "am start -W -a android.intent.action.VIEW -d "+adb.Quote(link))
+	_, err = shell.Run(ctx, "shell", "am start -W -a android.intent.action.VIEW -d "+adb.Quote(link))
 
 	return err
 }
@@ -194,7 +194,7 @@ func (b *Bridge) LaunchApp(ctx context.Context, request LaunchRequest) (string, 
 	if request.Package == "" && request.APK == "" {
 		return "", fmt.Errorf("%w: name a package, an apk, or both", ErrBadInput)
 	}
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return "", err
 	}
@@ -211,11 +211,11 @@ func (b *Bridge) LaunchApp(ctx context.Context, request LaunchRequest) (string, 
 				return "", err
 			}
 		}
-		if _, err := device.Run(ctx, "install", "-r", "-t", request.APK); err != nil {
+		if _, err := shell.Run(ctx, "install", "-r", "-t", request.APK); err != nil {
 			return "", err
 		}
 	}
-	resolved, err := device.Run(ctx, "shell", "cmd", "package", "resolve-activity", "--brief",
+	resolved, err := shell.Run(ctx, "shell", "cmd", "package", "resolve-activity", "--brief",
 		"-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", name)
 	if err != nil {
 		return "", err
@@ -224,7 +224,7 @@ func (b *Bridge) LaunchApp(ctx context.Context, request LaunchRequest) (string, 
 	if component == "" {
 		return "", fmt.Errorf("%w: %s", ErrNoLauncherActivity, name)
 	}
-	if _, err := device.Run(ctx, "shell", "am start -W -n "+adb.Quote(component)); err != nil {
+	if _, err := shell.Run(ctx, "shell", "am start -W -n "+adb.Quote(component)); err != nil {
 		return "", err
 	}
 
@@ -261,20 +261,20 @@ func (b *Bridge) Logs(ctx context.Context, name string, lines int) (string, erro
 	if name != "" && !adb.IsPackageName(name) {
 		return "", fmt.Errorf("%w: %q is not an application id", ErrBadInput, name)
 	}
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return "", err
 	}
 	args := []string{"logcat", "-d", "-t", strconv.Itoa(lines)}
 	if name != "" {
-		pid, _ := device.Run(ctx, "shell", "pidof -s "+name+"; true")
+		pid, _ := shell.Run(ctx, "shell", "pidof -s "+name+"; true")
 		if _, err := strconv.Atoi(strings.TrimSpace(pid)); err != nil {
 			return "", fmt.Errorf("%w: %s", ErrNotRunning, name)
 		}
 		args = append(args, "--pid="+strings.TrimSpace(pid))
 	}
 
-	return device.Run(ctx, args...)
+	return shell.Run(ctx, args...)
 }
 
 // WaitBooted answers the state once the emulator has booted, its launch failed, nothing is starting, or ctx ends.

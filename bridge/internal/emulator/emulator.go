@@ -105,17 +105,16 @@ func panelSize(emulatorStatus *pb.EmulatorStatus) device.Size {
 	return device.Size{Width: width, Height: height}
 }
 
-// StreamBox is the square that frames streamed with a short side of width fit in, upright or on their side.
-func (c *Conn) StreamBox(width int) device.Size {
+// streamBox is the square that frames streamed with a short side of width fit in, upright or on their side.
+func (c *Conn) streamBox(width int) device.Size {
 	short, long := min(c.panel.Width, c.panel.Height), max(c.panel.Width, c.panel.Height)
 	side := int(math.Round(float64(min(width, short)) * float64(long) / float64(short)))
 
 	return device.Size{Width: side, Height: side}
 }
 
-// Stream calls onFrame for each new screen image, streamed with a short side of streamWidth, until ctx ends or the emulator goes away.
 func (c *Conn) Stream(ctx context.Context, streamWidth int, onFrame func(device.Frame)) error {
-	size := c.StreamBox(streamWidth)
+	size := c.streamBox(streamWidth)
 	frames, err := c.client.StreamScreenshot(ctx, &pb.ImageFormat{
 		Format: pb.ImageFormat_RGB888,
 		Width:  uint32(size.Width),
@@ -146,7 +145,7 @@ func (c *Conn) Stream(ctx context.Context, streamWidth int, onFrame func(device.
 	}
 }
 
-// Touch presses (isDown) or releases one finger at a point given as fractions of the screen as the newest frame shows it.
+// Touch goes to the panel pixel under the point as the newest frame shows it.
 func (c *Conn) Touch(ctx context.Context, x, y float64, isDown bool) error {
 	pressure := int32(0)
 	if isDown {
@@ -176,7 +175,7 @@ func toPanel(r device.Rotation, x, y float64) (float64, float64) {
 	return x, y
 }
 
-// Rotate turns the device quarters of a turn, counter-clockwise for a positive count, keeping its tilt.
+// Rotate turns the virtual sensor, keeping its tilt.
 func (c *Conn) Rotate(ctx context.Context, quarters int) error {
 	c.rotating.Lock()
 	defer c.rotating.Unlock()
@@ -196,7 +195,7 @@ func (c *Conn) Rotate(ctx context.Context, quarters int) error {
 	return err
 }
 
-// Screenshot returns the screen as the emulator encodes it: a PNG at the device's full resolution.
+// Screenshot returns the PNG the emulator encodes.
 func (c *Conn) Screenshot(ctx context.Context) ([]byte, error) {
 	image, err := c.client.GetScreenshot(ctx, &pb.ImageFormat{Format: pb.ImageFormat_PNG})
 	if err != nil {
@@ -206,7 +205,7 @@ func (c *Conn) Screenshot(ctx context.Context) ([]byte, error) {
 	return image.GetImage(), nil
 }
 
-// ScreenshotAt returns the screen upright as RGB888 pixels the emulator scaled to fit size.
+// ScreenshotAt has the emulator scale the screen.
 func (c *Conn) ScreenshotAt(ctx context.Context, size device.Size) (device.Frame, error) {
 	image, err := c.client.GetScreenshot(ctx, &pb.ImageFormat{Format: pb.ImageFormat_RGB888, Width: uint32(size.Width), Height: uint32(size.Height)})
 	if err != nil {
@@ -220,7 +219,6 @@ func (c *Conn) ScreenshotAt(ctx context.Context, size device.Size) (device.Frame
 	return device.Frame{Seq: image.GetSeq(), Width: width, Height: height, Rotation: c.Rotation(), RGB: image.GetImage()}, nil
 }
 
-// Upright is the screen's size as the newest frame shows it: the panel, turned with the device.
 func (c *Conn) Upright() device.Size {
 	if c.Rotation()&1 == 1 {
 		return device.Size{Width: c.panel.Height, Height: c.panel.Width}
@@ -232,7 +230,6 @@ func (c *Conn) Upright() device.Size {
 // Rotation is the device's rotation as the newest frame shows it.
 func (c *Conn) Rotation() device.Rotation { return device.Rotation(c.rotation.Load()) }
 
-// Key presses and releases a named key (GoHome, GoBack, AppSwitch, Enter, Backspace, ...).
 func (c *Conn) Key(ctx context.Context, key string) error {
 	_, err := c.client.SendKey(ctx, &pb.KeyboardEvent{EventType: pb.KeyboardEvent_keypress, Key: key})
 
@@ -246,7 +243,7 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Booted reports whether the device finished booting; an emulator too old to say counts as booted.
+// Booted counts an emulator too old to say as booted.
 func (c *Conn) Booted(ctx context.Context) (bool, error) {
 	emulatorStatus, err := c.client.GetStatus(ctx, &emptypb.Empty{})
 	if status.Code(err) == codes.Unimplemented {
