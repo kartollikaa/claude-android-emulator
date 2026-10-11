@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 )
@@ -146,7 +146,7 @@ func TestSwipeMovesBetweenItsEnds(t *testing.T) {
 func TestGestureFollowsTheRotation(t *testing.T) {
 	h, fake, frames, _ := agentDevice(t)
 	frames <- fakeemulator.Turned(fakeemulator.Frame(1, streamHeight, streamWidth, 0), pb.Rotation_LANDSCAPE)
-	h.waitFor(t, func(state State) bool { return state.Rotation == emulator.Landscape })
+	h.waitFor(t, func(state State) bool { return state.Rotation == device.Landscape })
 
 	if status, answer := control(t, h, "/gesture", `{"x": 4, "y": 2}`); status != http.StatusNoContent {
 		t.Fatalf("tap answered %d %s", status, answer)

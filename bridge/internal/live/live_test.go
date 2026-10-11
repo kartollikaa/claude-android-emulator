@@ -20,7 +20,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
@@ -40,8 +40,8 @@ const (
 	patience     = 3 * time.Second
 )
 
-func deviceSize() emulator.Size { return emulator.Size{Width: deviceWidth, Height: deviceHeight} }
-func streamSize() emulator.Size { return emulator.Size{Width: streamWidth, Height: streamHeight} }
+func deviceSize() device.Size { return device.Size{Width: deviceWidth, Height: deviceHeight} }
+func streamSize() device.Size { return device.Size{Width: streamWidth, Height: streamHeight} }
 
 type harness struct {
 	dir    string
@@ -365,14 +365,14 @@ func TestStatusStreamFollowsTheFrames(t *testing.T) {
 	h := startBridge(t)
 	ctx := testContext(t)
 	_, frames := h.connected(t, ctx, "")
-	if state := h.status(t); state.Stream != (emulator.Size{}) {
+	if state := h.status(t); state.Stream != (device.Size{}) {
 		t.Fatalf("stream = %+v before any frame arrived, want none", state.Stream)
 	}
 
 	frames <- fakeemulator.Frame(3, streamWidth, streamHeight-1, 0)
 
 	state := h.waitFor(t, func(state State) bool { return state.Seq == 3 })
-	if want := (emulator.Size{Width: streamWidth, Height: streamHeight - 1}); state.Stream != want {
+	if want := (device.Size{Width: streamWidth, Height: streamHeight - 1}); state.Stream != want {
 		t.Fatalf("stream = %+v, want the %+v the emulator sent rather than the size asked for", state.Stream, want)
 	}
 }

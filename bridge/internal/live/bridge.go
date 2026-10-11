@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
@@ -35,16 +36,16 @@ type Config struct {
 
 // State is what the bridge knows about the emulator, as /status and the live view see it.
 type State struct {
-	Connected      bool              `json:"connected"`
-	Booted         bool              `json:"booted"`
-	Serial         string            `json:"serial"`
-	AVD            string            `json:"avd"`
-	Device         emulator.Size     `json:"device"`
-	Stream         emulator.Size     `json:"stream"`
-	Seq            uint32            `json:"seq"`
-	Launch         Launch            `json:"launch,omitzero"`
-	Rotation       emulator.Rotation `json:"rotation"`
-	RecordingSince time.Time         `json:"recordingSince,omitzero"`
+	Connected      bool            `json:"connected"`
+	Booted         bool            `json:"booted"`
+	Serial         string          `json:"serial"`
+	AVD            string          `json:"avd"`
+	Device         device.Size     `json:"device"`
+	Stream         device.Size     `json:"stream"`
+	Seq            uint32          `json:"seq"`
+	Launch         Launch          `json:"launch,omitzero"`
+	Rotation       device.Rotation `json:"rotation"`
+	RecordingSince time.Time       `json:"recordingSince,omitzero"`
 	// RecordingError says why the newest recording was not saved.
 	RecordingError string `json:"recordingError,omitempty"`
 	// Saved is the newest screenshot or recording saved, so the page can say where.
@@ -73,11 +74,11 @@ type Bridge struct {
 	config Config
 
 	mu        sync.Mutex
-	conn      *emulator.Conn
+	conn      device.Device
 	state     State
 	launch    Launch
 	launchID  uint64
-	latest    *emulator.Frame
+	latest    *device.Frame
 	viewers   map[chan struct{}]struct{}
 	recording *recording
 	// Closed once Run has first looked for a running emulator, so a state read before it does not say none runs.
@@ -133,24 +134,23 @@ func (b *Bridge) Run(ctx context.Context) {
 			sleep(ctx, b.config.RetryInterval)
 			continue
 		}
-		size := conn.StreamBox(b.config.StreamWidth)
 		b.attach(conn)
 		b.markLooked()
-		b.config.Logger.Info("emulator connected", "serial", conn.Emulator.Serial, "device", conn.Device, "stream", size)
+		b.config.Logger.Info("emulator connected", "serial", conn.Serial(), "device", conn.Panel())
 		streaming, stopStreaming := context.WithCancel(ctx)
 		go b.watchBoot(streaming, conn)
-		err := conn.Stream(streaming, size, b.publish)
+		err := conn.Stream(streaming, b.config.StreamWidth, b.publish)
 		stopStreaming()
 		b.detach()
 		conn.Close()
 		if ctx.Err() == nil {
-			b.config.Logger.Info("emulator went away", "serial", conn.Emulator.Serial, "reason", err)
+			b.config.Logger.Info("emulator went away", "serial", conn.Serial(), "reason", err)
 			sleep(ctx, b.config.RetryInterval)
 		}
 	}
 }
 
-func (b *Bridge) connect(ctx context.Context) *emulator.Conn {
+func (b *Bridge) connect(ctx context.Context) device.Device {
 	found, err := discovery.Find(b.config.DiscoveryDir)
 	if err != nil {
 		b.config.Logger.Warn("cannot read the emulator discovery dir", "dir", b.config.DiscoveryDir, "err", err)
@@ -168,19 +168,19 @@ func (b *Bridge) connect(ctx context.Context) *emulator.Conn {
 	return nil
 }
 
-func (b *Bridge) attach(conn *emulator.Conn) {
+func (b *Bridge) attach(conn device.Device) {
 	b.mu.Lock()
 	b.conn = conn
 	b.latest = nil
-	b.state = b.keepingCaptures(State{Connected: true, Serial: conn.Emulator.Serial, AVD: conn.Emulator.AVD, Device: conn.Device})
-	if b.launch.Phase == launchFailed || b.launch.AVD == conn.Emulator.AVD {
+	b.state = b.keepingCaptures(State{Connected: true, Serial: conn.Serial(), AVD: conn.Name(), Device: conn.Panel()})
+	if b.launch.Phase == launchFailed || b.launch.AVD == conn.Name() {
 		b.launch = Launch{}
 	}
 	b.mu.Unlock()
 	b.notifyViewers()
 }
 
-func (b *Bridge) watchBoot(ctx context.Context, conn *emulator.Conn) {
+func (b *Bridge) watchBoot(ctx context.Context, conn device.Device) {
 	for ctx.Err() == nil {
 		isBooted, err := conn.Booted(ctx)
 		if err != nil {
@@ -218,12 +218,12 @@ func (b *Bridge) keepingCaptures(state State) State {
 	return state
 }
 
-func (b *Bridge) publish(frame emulator.Frame) {
+func (b *Bridge) publish(frame device.Frame) {
 	b.mu.Lock()
 	b.latest = &frame
 	b.state.Seq = frame.Seq
 	if frame.Width > 0 && frame.Height > 0 {
-		b.state.Stream = emulator.Size{Width: frame.Width, Height: frame.Height}
+		b.state.Stream = device.Size{Width: frame.Width, Height: frame.Height}
 		b.state.Rotation = frame.Rotation
 	}
 	b.mu.Unlock()
@@ -244,7 +244,7 @@ func (b *Bridge) LookedState(ctx context.Context) State {
 	return b.State()
 }
 
-func (b *Bridge) snapshot() (State, *emulator.Frame) {
+func (b *Bridge) snapshot() (State, *device.Frame) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	state := b.state
@@ -293,7 +293,7 @@ func (b *Bridge) Input(ctx context.Context, message Message) error {
 }
 
 // delivery checks the message and returns the emulator call it stands for.
-func (m Message) delivery() (func(context.Context, *emulator.Conn) error, error) {
+func (m Message) delivery() (func(context.Context, device.Device) error, error) {
 	switch m.Type {
 	case "touch":
 		if m.Phase != "down" && m.Phase != "move" && m.Phase != "up" {
@@ -302,19 +302,19 @@ func (m Message) delivery() (func(context.Context, *emulator.Conn) error, error)
 		if m.X == nil || m.Y == nil {
 			return nil, fmt.Errorf("%w: a touch needs x and y", ErrBadInput)
 		}
-		return func(ctx context.Context, conn *emulator.Conn) error {
+		return func(ctx context.Context, conn device.Device) error {
 			return conn.Touch(ctx, *m.X, *m.Y, m.Phase != "up")
 		}, nil
 	case "key":
 		if m.Key == "" {
 			return nil, fmt.Errorf("%w: a key message names no key", ErrBadInput)
 		}
-		return func(ctx context.Context, conn *emulator.Conn) error { return conn.Key(ctx, m.Key) }, nil
+		return func(ctx context.Context, conn device.Device) error { return conn.Key(ctx, m.Key) }, nil
 	case "text":
 		if m.Text == "" {
 			return nil, fmt.Errorf("%w: a text message carries no text", ErrBadInput)
 		}
-		return func(ctx context.Context, conn *emulator.Conn) error { return conn.Text(ctx, m.Text) }, nil
+		return func(ctx context.Context, conn device.Device) error { return conn.Text(ctx, m.Text) }, nil
 	}
 
 	return nil, fmt.Errorf("%w: unknown input type %q", ErrBadInput, m.Type)

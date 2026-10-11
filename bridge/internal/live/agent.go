@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/adb"
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
@@ -49,10 +49,10 @@ var (
 
 // Screen is a screenshot for Claude: a base64 JPEG small enough to read whole, in whose pixels taps and swipes are given.
 type Screen struct {
-	JPEG     string            `json:"jpeg"`
-	Width    int               `json:"width"`
-	Height   int               `json:"height"`
-	Rotation emulator.Rotation `json:"rotation"`
+	JPEG     string          `json:"jpeg"`
+	Width    int             `json:"width"`
+	Height   int             `json:"height"`
+	Rotation device.Rotation `json:"rotation"`
 }
 
 // Gesture is a tap, a long press or a swipe in a Screen's pixels; a tap has no end.
@@ -72,9 +72,9 @@ type LaunchRequest struct {
 }
 
 // screenSize is the size Screen draws the upright screen at, never larger than the device.
-func screenSize(upright emulator.Size) emulator.Size {
+func screenSize(upright device.Size) device.Size {
 	scale := min(1, float64(screenLongSide)/float64(max(upright.Width, upright.Height)))
-	return emulator.Size{
+	return device.Size{
 		Width:  int(math.Round(float64(upright.Width) * scale)),
 		Height: int(math.Round(float64(upright.Height) * scale)),
 	}

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/adb"
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
@@ -80,7 +80,7 @@ func (b *Bridge) Screenshot(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	file, err := b.newCapture("Screenshot", conn.Emulator.Serial, ".png")
+	file, err := b.newCapture("Screenshot", conn.Serial(), ".png")
 	if err != nil {
 		return "", err
 	}
@@ -263,7 +263,7 @@ func (b *Bridge) OpenAppSettings(ctx context.Context) error {
 	return err
 }
 
-func (b *Bridge) connection() *emulator.Conn {
+func (b *Bridge) connection() device.Device {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -277,7 +277,7 @@ func (b *Bridge) adbDevice() (adb.Device, error) {
 	}
 	if found, err := sdk.Find(b.config.SDKCandidates, runtime.GOOS); err == nil {
 		if _, err := os.Stat(found.ADB()); err == nil {
-			return adb.Device{Path: found.ADB(), Serial: conn.Emulator.Serial}, nil
+			return adb.Device{Path: found.ADB(), Serial: conn.Serial()}, nil
 		}
 	}
 	path, err := exec.LookPath("adb")
@@ -285,7 +285,7 @@ func (b *Bridge) adbDevice() (adb.Device, error) {
 		return adb.Device{}, ErrNoADB
 	}
 
-	return adb.Device{Path: path, Serial: conn.Emulator.Serial}, nil
+	return adb.Device{Path: path, Serial: conn.Serial()}, nil
 }
 
 // newCapture creates <kind>_<serial>_<yyyyMMdd-HHmmss>.<ext> in the captures directory, numbering a name already taken.
