@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -40,15 +41,23 @@ type harness struct {
 	bridge *Bridge
 }
 
-func startBridge(t *testing.T) *harness {
+func startBridge(t *testing.T, options ...func(*Config)) *harness {
 	t.Helper()
 	dir := t.TempDir()
-	bridge := New(Config{
-		DiscoveryDir:  dir,
-		StreamWidth:   streamWidth,
-		RetryInterval: 20 * time.Millisecond,
-		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	config := Config{
+		DiscoveryDir:     dir,
+		StreamWidth:      streamWidth,
+		RetryInterval:    20 * time.Millisecond,
+		BootPollInterval: 20 * time.Millisecond,
+		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SDKCandidates:    []string{filepath.Join(dir, "no-sdk")},
+		AVDHome:          t.TempDir(),
+		LogDir:           t.TempDir(),
+	}
+	for _, option := range options {
+		option(&config)
+	}
+	bridge := New(config)
 	ctx, cancel := context.WithCancel(context.Background())
 	go bridge.Run(ctx)
 	server := httptest.NewServer(bridge.Handler())
@@ -144,7 +153,12 @@ func sendJSON(t *testing.T, ctx context.Context, socket *websocket.Conn, message
 
 func eventually(t *testing.T, condition func() bool, what string) {
 	t.Helper()
-	deadline := time.Now().Add(patience)
+	eventuallyWithin(t, patience, condition, what)
+}
+
+func eventuallyWithin(t *testing.T, limit time.Duration, condition func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		if condition() {
 			return
@@ -278,8 +292,10 @@ var badMessages = []string{
 func TestHTTPInputRejectsBadMessages(t *testing.T) {
 	h := startBridge(t)
 	ctx := testContext(t)
-	if status := postInput(t, h, "application/json", badMessages[1]); status != http.StatusBadRequest {
-		t.Errorf("a bad message with no emulator answered %d, want 400", status)
+	for _, message := range badMessages {
+		if status := postInput(t, h, "application/json", message); status != http.StatusBadRequest {
+			t.Errorf("%s with no emulator answered %d, want 400", message, status)
+		}
 	}
 	fake, _ := h.connected(t, ctx, "")
 
@@ -319,10 +335,11 @@ func TestStatusConnected(t *testing.T) {
 	_, frames := h.connected(t, ctx, "")
 	frames <- fakeemulator.Frame(7, streamWidth, streamHeight, 0)
 
-	state := h.waitFor(t, func(state State) bool { return state.Seq == 7 })
+	state := h.waitFor(t, func(state State) bool { return state.Seq == 7 && state.Booted })
 
 	want := State{
 		Connected: true,
+		Booted:    true,
 		Serial:    "emulator-5556",
 		Device:    deviceSize(),
 		Stream:    streamSize(),
@@ -373,7 +390,7 @@ func TestLiveStateMatchesStatus(t *testing.T) {
 	ctx := testContext(t)
 	_, frames := h.connected(t, ctx, "")
 	frames <- fakeemulator.Frame(5, streamWidth, streamHeight, 0)
-	want := h.waitFor(t, func(state State) bool { return state.Seq == 5 })
+	want := h.waitFor(t, func(state State) bool { return state.Seq == 5 && state.Booted })
 	want.Seq = 0
 	socket := h.dialLive(t, ctx)
 

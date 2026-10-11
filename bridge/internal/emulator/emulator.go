@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
@@ -138,6 +141,19 @@ func (c *Conn) Key(ctx context.Context, key string) error {
 	_, err := c.client.SendKey(ctx, &pb.KeyboardEvent{EventType: pb.KeyboardEvent_keypress, Key: key})
 
 	return err
+}
+
+// Booted reports whether the device finished booting; an emulator too old to say counts as booted.
+func (c *Conn) Booted(ctx context.Context) (bool, error) {
+	emulatorStatus, err := c.client.GetStatus(ctx, &emptypb.Empty{})
+	if status.Code(err) == codes.Unimplemented {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return emulatorStatus.GetBooted(), nil
 }
 
 func (c *Conn) Text(ctx context.Context, text string) error {

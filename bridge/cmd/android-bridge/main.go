@@ -21,6 +21,7 @@ func main() {
 	port := flag.Int("port", 7357, "port of the live view on 127.0.0.1")
 	streamWidth := flag.Int("stream-width", 540, "width in pixels the emulator streams frames at")
 	discoveryDir := flag.String("discovery-dir", discovery.DefaultDir(), "where running emulators write pid_<pid>.ini")
+	sdkDir := flag.String("sdk", "", "Android SDK folder (default: ANDROID_HOME, ANDROID_SDK_ROOT, then the platform's default)")
 	verbose := flag.Bool("v", false, "log debug detail")
 	flag.Parse()
 
@@ -30,7 +31,11 @@ func main() {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	if err := run(*port, live.Config{DiscoveryDir: *discoveryDir, StreamWidth: *streamWidth, Logger: logger}); err != nil {
+	config := live.Config{DiscoveryDir: *discoveryDir, StreamWidth: *streamWidth, Logger: logger}
+	if *sdkDir != "" {
+		config.SDKCandidates = []string{*sdkDir}
+	}
+	if err := run(*port, config); err != nil {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}

@@ -6,28 +6,39 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
-// Config sets where the bridge looks for emulators and how it streams them.
+// Config sets where the bridge looks for emulators and the SDK, and how it streams them.
 type Config struct {
-	DiscoveryDir  string
-	StreamWidth   int
-	RetryInterval time.Duration
-	Logger        *slog.Logger
+	DiscoveryDir     string
+	StreamWidth      int
+	RetryInterval    time.Duration
+	BootPollInterval time.Duration
+	Logger           *slog.Logger
+	SDKCandidates    []string
+	AVDHome          string
+	LogDir           string
 }
 
 // State is what the bridge knows about the emulator, as /status and the live view see it.
 type State struct {
 	Connected bool          `json:"connected"`
+	Booted    bool          `json:"booted"`
 	Serial    string        `json:"serial"`
+	AVD       string        `json:"avd"`
 	Device    emulator.Size `json:"device"`
 	Stream    emulator.Size `json:"stream"`
 	Seq       uint32        `json:"seq"`
+	Launch    Launch        `json:"launch,omitzero"`
 }
 
 // Message is one input from the live view or the mod; a touch's x and y are screen fractions.
@@ -54,6 +65,7 @@ type Bridge struct {
 	mu      sync.Mutex
 	conn    *emulator.Conn
 	state   State
+	launch  Launch
 	latest  *emulator.Frame
 	viewers map[chan struct{}]struct{}
 }
@@ -66,8 +78,21 @@ func New(config Config) *Bridge {
 	if config.RetryInterval <= 0 {
 		config.RetryInterval = time.Second
 	}
+	if config.BootPollInterval <= 0 {
+		config.BootPollInterval = 500 * time.Millisecond
+	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
+	}
+	home, _ := os.UserHomeDir()
+	if config.SDKCandidates == nil {
+		config.SDKCandidates = sdk.Candidates(os.Getenv, home, runtime.GOOS)
+	}
+	if config.AVDHome == "" {
+		config.AVDHome = sdk.AVDHome(os.Getenv, home)
+	}
+	if config.LogDir == "" {
+		config.LogDir = filepath.Join(os.TempDir(), "claude-android-emulator")
 	}
 
 	return &Bridge{config: config, viewers: map[chan struct{}]struct{}{}}
@@ -84,7 +109,10 @@ func (b *Bridge) Run(ctx context.Context) {
 		size := conn.StreamSize(b.config.StreamWidth)
 		b.attach(conn)
 		b.config.Logger.Info("emulator connected", "serial", conn.Emulator.Serial, "device", conn.Device, "stream", size)
-		err := conn.Stream(ctx, size, b.publish)
+		streaming, stopStreaming := context.WithCancel(ctx)
+		go b.watchBoot(streaming, conn)
+		err := conn.Stream(streaming, size, b.publish)
+		stopStreaming()
 		b.detach()
 		conn.Close()
 		if ctx.Err() == nil {
@@ -116,9 +144,35 @@ func (b *Bridge) attach(conn *emulator.Conn) {
 	b.mu.Lock()
 	b.conn = conn
 	b.latest = nil
-	b.state = State{Connected: true, Serial: conn.Emulator.Serial, Device: conn.Device}
+	b.state = State{Connected: true, Serial: conn.Emulator.Serial, AVD: conn.Emulator.AVD, Device: conn.Device}
+	if b.launch.Phase == launchFailed || b.launch.AVD == conn.Emulator.AVD {
+		b.launch = Launch{}
+	}
 	b.mu.Unlock()
 	b.notifyViewers()
+}
+
+// watchBoot polls the emulator until it reports the device booted.
+func (b *Bridge) watchBoot(ctx context.Context, conn *emulator.Conn) {
+	for ctx.Err() == nil {
+		isBooted, err := conn.Booted(ctx)
+		if err != nil {
+			b.config.Logger.Debug("boot status unavailable", "err", err)
+		}
+		if isBooted {
+			b.mu.Lock()
+			isCurrent := b.conn == conn
+			if isCurrent {
+				b.state.Booted = true
+			}
+			b.mu.Unlock()
+			if isCurrent {
+				b.notifyViewers()
+			}
+			return
+		}
+		sleep(ctx, b.config.BootPollInterval)
+	}
 }
 
 func (b *Bridge) detach() {
@@ -142,15 +196,16 @@ func (b *Bridge) publish(frame emulator.Frame) {
 }
 
 func (b *Bridge) State() State {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.state
+	state, _ := b.snapshot()
+	return state
 }
 
 func (b *Bridge) snapshot() (State, *emulator.Frame) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.state, b.latest
+	state := b.state
+	state.Launch = b.launch
+	return state, b.latest
 }
 
 // watch registers a viewer: its channel fires whenever the state or the frame changes,

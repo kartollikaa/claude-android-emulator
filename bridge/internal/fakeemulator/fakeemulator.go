@@ -25,11 +25,14 @@ type Fake struct {
 	Width, Height int
 	Port          int
 	Token         string
+	// AVD, when set before WriteINI, is the name the discovery file gives as avd.id.
+	AVD string
 
 	server  *grpc.Server
 	streams chan chan *pb.Image
 
 	mu       sync.Mutex
+	isBooted bool
 	touches  []*pb.Touch
 	keys     []*pb.KeyboardEvent
 	calls    int
@@ -44,11 +47,12 @@ func Start(t *testing.T, width, height int, token string) *Fake {
 		t.Fatal(err)
 	}
 	fake := &Fake{
-		Width:   width,
-		Height:  height,
-		Port:    listener.Addr().(*net.TCPAddr).Port,
-		Token:   token,
-		streams: make(chan chan *pb.Image, 4),
+		Width:    width,
+		Height:   height,
+		Port:     listener.Addr().(*net.TCPAddr).Port,
+		Token:    token,
+		streams:  make(chan chan *pb.Image, 4),
+		isBooted: true,
 	}
 	fake.server = grpc.NewServer(
 		grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
@@ -91,6 +95,9 @@ func (f *Fake) authorize(ctx context.Context) error {
 func (f *Fake) WriteINI(t *testing.T, dir string, pid int) string {
 	t.Helper()
 	text := fmt.Sprintf("port.serial=%d\ngrpc.port=%d\n", 5554+2*pid, f.Port)
+	if f.AVD != "" {
+		text += "avd.id=" + f.AVD + "\n"
+	}
 	if f.Token != "" {
 		text += "grpc.token=" + f.Token + "\n"
 	}
@@ -148,6 +155,19 @@ func (f *Fake) Calls() (calls, rejected int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls, f.rejected
+}
+
+// SetBooted sets what getStatus answers; a fake starts booted.
+func (f *Fake) SetBooted(isBooted bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.isBooted = isBooted
+}
+
+func (f *Fake) GetStatus(context.Context, *emptypb.Empty) (*pb.EmulatorStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &pb.EmulatorStatus{Booted: f.isBooted}, nil
 }
 
 func (f *Fake) GetScreenshot(context.Context, *pb.ImageFormat) (*pb.Image, error) {

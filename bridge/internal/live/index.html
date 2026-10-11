@@ -14,6 +14,9 @@
     --line: #dedcd3;
     --bezel: #1c1c1e;
     --focus: #2c84db;
+    --accent: #c96442;
+    --accent-fg: #ffffff;
+    --error: #b3261e;
     --bezel-width: 8px;
   }
   @media (prefers-color-scheme: dark) {
@@ -25,6 +28,7 @@
       --button-hover: #3b3b38;
       --line: #42413d;
       --bezel: #0b0b0c;
+      --error: #f2b8b5;
     }
   }
   * { box-sizing: border-box; }
@@ -41,13 +45,36 @@
     touch-action: none; cursor: default; outline: none;
   }
   canvas:focus-visible { box-shadow: 0 0 0 3px var(--focus); }
-  .waiting {
+  .panel {
     position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
-    gap: 6px; text-align: center; color: var(--muted); padding: 24px;
+    gap: 10px; text-align: center; color: var(--muted); padding: 24px; overflow: auto;
   }
-  .waiting strong { color: var(--fg); font-weight: 600; }
-  body.offline canvas { visibility: hidden; }
-  body.offline .waiting { display: flex; }
+  .panel strong { color: var(--fg); font-weight: 600; font-size: 15px; }
+  .panel [hidden] { display: none !important; }
+  body.offline canvas, body.offline nav { visibility: hidden; }
+  body.offline .panel { display: flex; }
+  .progress { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .spinner {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 3px solid var(--line); border-top-color: var(--accent); animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .picker { width: min(360px, 100%); display: flex; flex-direction: column; gap: 10px; text-align: left; }
+  .picker h1 { margin: 0; font-size: 15px; font-weight: 600; color: var(--fg); }
+  .error { margin: 0; padding: 8px 10px; border: 1px solid var(--error); border-radius: 10px; color: var(--error); overflow-wrap: anywhere; }
+  .avds { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .avds li {
+    display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+    border: 1px solid var(--line); border-radius: 12px; background: var(--button);
+  }
+  .avds .name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .avds .name b { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .avds button {
+    padding: 6px 14px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-fg);
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .avds button:disabled { background: var(--line); color: var(--muted); cursor: default; }
+  .avds button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   nav { display: flex; gap: 8px; }
   nav button {
     width: 44px; height: 36px; display: grid; place-items: center; padding: 0;
@@ -61,9 +88,22 @@
 <body class="offline">
   <div class="device">
     <canvas id="screen" width="540" height="1200" tabindex="0" aria-label="Android screen: click to tap, drag to swipe, type to send keys"></canvas>
-    <div class="waiting" id="waiting">
-      <strong>No emulator running</strong>
-      <span>The screen shows up here as soon as one starts.</span>
+    <div class="panel">
+      <div class="progress" id="progress" hidden>
+        <div class="spinner"></div>
+        <strong id="progress-title"></strong>
+        <span id="progress-time"></span>
+      </div>
+      <div class="picker" id="picker" hidden>
+        <p class="error" id="launch-error" hidden></p>
+        <h1>Virtual devices</h1>
+        <ul class="avds" id="avds"></ul>
+        <span id="avds-empty" hidden>No virtual devices yet. Create one in Android Studio's Device Manager, then reload.</span>
+      </div>
+      <div class="progress" id="problem" hidden>
+        <strong id="problem-title"></strong>
+        <span id="problem-detail"></span>
+      </div>
     </div>
   </div>
   <nav>
@@ -80,14 +120,98 @@
   function connect() {
     socket = new WebSocket(`ws://${location.host}/live`)
     socket.binaryType = 'arraybuffer'
-    socket.onclose = () => { document.body.classList.add('offline'); setTimeout(connect, 1000) }
+    socket.onclose = () => {
+      show('problem', { title: 'Connecting to the bridge…', detail: '' })
+      setTimeout(connect, 1000)
+    }
     socket.onmessage = ({ data }) => {
       if (typeof data === 'string') {
         const message = JSON.parse(data)
-        if (message.type === 'state') document.body.classList.toggle('offline', !message.connected)
+        if (message.type === 'state') render(message)
         return
       }
       draw(new DataView(data), new Uint8Array(data, 12))
+    }
+  }
+
+  // Panels: the AVD list, start and boot progress, problems; the screen once the emulator has booted.
+  const panels = { progress: el('progress'), picker: el('picker'), problem: el('problem') }
+  let shown = null
+  let progressSince = 0
+  let names = {}
+
+  function el(id) { return document.getElementById(id) }
+
+  function render(state) {
+    if (state.connected && state.booted) return show(null)
+    if (state.connected) return show('progress', { title: `Booting ${label(state.avd || state.serial)}` })
+    if (state.launch?.phase === 'starting') return show('progress', { title: `Starting ${label(state.launch.avd)}` })
+    show('picker', { error: state.launch?.phase === 'failed' ? state.launch.error : '' })
+  }
+
+  // Starting and booting share the progress panel, so its clock runs on from one to the other.
+  function show(name, options = {}) {
+    const entering = name !== shown
+    shown = name
+    if (name === 'progress' && entering) progressSince = Date.now()
+    for (const [key, panel] of Object.entries(panels)) panel.hidden = key !== name
+    document.body.classList.toggle('offline', name !== null)
+    if (name === 'progress') { el('progress-title').textContent = options.title; tick() }
+    if (name === 'problem') { el('problem-title').textContent = options.title; el('problem-detail').textContent = options.detail }
+    if (name === 'picker') {
+      el('launch-error').hidden = !options.error
+      el('launch-error').textContent = options.error || ''
+      if (entering) loadAVDs()
+    }
+  }
+
+  const label = avd => names[avd] || avd || 'the emulator'
+
+  function tick() {
+    if (shown !== 'progress') return
+    el('progress-time').textContent = `${Math.round((Date.now() - progressSince) / 1000)} s`
+  }
+  setInterval(tick, 1000)
+
+  async function loadAVDs() {
+    const list = el('avds')
+    let answer
+    try {
+      const response = await fetch('/avds')
+      answer = await response.json()
+      if (!response.ok) return show('problem', { title: 'Android SDK not found', detail: answer.error })
+    } catch (error) {
+      return show('problem', { title: 'Cannot list the virtual devices', detail: String(error) })
+    }
+    names = Object.fromEntries(answer.avds.map(avd => [avd.name, avd.displayName]))
+    el('avds-empty').hidden = answer.avds.length > 0
+    list.replaceChildren(...answer.avds.map(avd => {
+      const item = document.createElement('li')
+      const name = document.createElement('span')
+      name.className = 'name'
+      const title = document.createElement('b')
+      title.textContent = avd.displayName
+      const detail = document.createElement('span')
+      detail.textContent = [avd.api && `API ${avd.api}`, avd.running && 'running'].filter(Boolean).join(' · ') || avd.name
+      name.append(title, detail)
+      const start = document.createElement('button')
+      start.textContent = 'Start'
+      start.disabled = avd.running
+      start.addEventListener('click', () => startAVD(avd.name, start))
+      item.append(name, start)
+      return item
+    }))
+  }
+
+  async function startAVD(name, button) {
+    button.disabled = true
+    const response = await fetch('/emulators/start', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ avd: name }),
+    })
+    if (!response.ok) {
+      el('launch-error').hidden = false
+      el('launch-error').textContent = (await response.text()).trim()
+      button.disabled = false
     }
   }
 
