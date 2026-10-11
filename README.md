@@ -4,7 +4,7 @@ A Claude Code mod that shows an Android emulator or a USB device right inside Cl
 terminal and in the desktop app's Code tab. It is the Android counterpart of the desktop app's
 built-in iOS Simulator panel.
 
-> **Status: walking skeleton.** `/android` opens a pane that lists attached devices and shows a
+> **Status: walking skeleton.** `/emulator` opens a pane that lists attached devices and shows a
 > screenshot of the selected one on demand. Live streaming, input forwarding and model-facing
 > tools come next: see [docs/plan.md](docs/plan.md).
 
@@ -30,7 +30,7 @@ in the desktop app's local sessions.
 
 ## Use
 
-- `/android` opens the **Android** pane and takes a screenshot of the first ready device.
+- `/emulator` opens the **Android** pane and takes a screenshot of the first ready device.
 - Press a device's button to switch to it, **Refresh** to re-scan devices and take a new screenshot.
 
 ## Develop
@@ -75,9 +75,11 @@ node prototypes/live-helper/server.mjs
 
 - **Option A, browser pane:** open `http://127.0.0.1:7357` in the desktop app's built-in browser
   pane. Live canvas: click to tap, drag to swipe, type to send keys, Back / Home / Recents.
-- **Option B, mod pane:** `/android`, then **Go live**. On the desktop the pane polls the helper for
-  JPEG frames drawn as an `Svg`; in the terminal it draws the helper's raw frame files as an `Image`
-  swapped with `$.ui.blit`. Both have a `Client` touch overlay that sends taps and swipes back.
+- **Option B, mod pane:** `/emulator`, then **Go live**. On the desktop the pane polls the helper
+  for JPEG frames drawn as an `Svg`, with a `Client` touch surface pinned over the picture that
+  streams presses, drags and releases to the emulator as they happen. In the terminal it draws the
+  helper's raw frame files as an `Image` swapped with `$.ui.blit`, under a `Client` overlay that
+  sends each drag as one gesture.
 - **Stream test (desktop):** **Test stream** draws the helper's MJPEG stream through each embedding
   the desktop might load natively (`Svg` image, interactive `Svg`, `Markdown` image); the helper
   logs which ones the desktop requests (`mjpeg stream opened: v=...`).
@@ -88,8 +90,9 @@ node prototypes/live-helper/server.mjs
 | --- | --- |
 | `.claude-plugin/plugin.json` | The mod's manifest |
 | `.claude-plugin/marketplace.json` | Makes this repository a one-plugin marketplace |
-| `hooks/register.tsx` | The hooks module: the `/android` command, the pane, live mode |
-| `hooks/touch-overlay.tsx` | The `Client` surface module that turns pointer drags into gestures |
+| `hooks/register.tsx` | The hooks module: the `/emulator` command, the pane, live mode |
+| `hooks/touch-surface.tsx` | Desktop `Client` surface module: streams pointer presses, drags and releases |
+| `hooks/touch-overlay.tsx` | Terminal `Client` surface module: turns pointer drags into gestures |
 | `hooks/adb.ts`, `hooks/live.ts` | Pure helpers: adb discovery, parsing, sizing, live frames |
 | `prototypes/live-helper/` | Throwaway Node helper for the desktop view prototypes |
 | `types/index.d.ts` | The `$.state` contract |

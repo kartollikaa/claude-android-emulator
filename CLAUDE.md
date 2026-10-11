@@ -22,6 +22,12 @@ Read `README.md` for usage and `docs/plan.md` for the architecture and roadmap b
 - Never write frames or other churn into the plugin folder: the session hot-reloads on every
   change there. Frames go under `$TMPDIR/claude-android-emulator/`.
 - Render hooks never write state; writes happen in press handlers or other events via `update`.
+- A desktop `Client` region is as tall as what its module draws, capped by the `Client`'s own
+  `height` (cells or `%`), which never stretches it; percentage heights inside the module resolve to
+  nothing. To cover an element, pin an absolute `Box` to it, give the `Client` `100%` × `100%`, and
+  draw taller content. Desktop pointer events carry whole cells, never `fine`.
+- `ClientElements` is the terminal's table minus `Client`/`Raster`/`Image`: no `Svg` in a surface
+  module, on any surface.
 - The validator follows `$` only into functions declared in the hooks module itself, and reads
   state atoms only when they are declared there: every function taking `$` and every `atom(...)`
   lives in `hooks/register.tsx`; other files hold pure helpers.

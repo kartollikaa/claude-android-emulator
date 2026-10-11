@@ -30,11 +30,6 @@ export type FileFrame = {
 
 export type LiveMode = 'svg' | 'file'
 
-export type CellMetrics = {
-  advance: number
-  lineHeight: number
-}
-
 declare module 'claude-code' {
   interface PluginState {
     'android-emulator': {
@@ -50,7 +45,6 @@ declare module 'claude-code' {
       liveFile: FileFrame | null
       isProbing: boolean
       touchStatus: string | null
-      cellMetrics: CellMetrics
     }
   }
 }

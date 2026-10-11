@@ -11,19 +11,18 @@ import {
 } from './adb'
 import type { LiveMode } from '../types'
 import {
-  DEFAULT_CELL_METRICS,
   HELPER,
   IDLE_MS,
   LONG_POLL_MS,
   PROBE_VARIANTS,
   RATE_WINDOW_MS,
   displaySize,
-  measuredMetrics,
-  overlayCells,
   parseFileFrame,
   parseLiveFrame,
+  parseTouchEvents,
   streamMarkdown,
   streamSvg,
+  touchPoint,
 } from './live'
 
 const PANE = 'android'
@@ -48,13 +47,14 @@ const liveMode = atom({ plugin: 'android-emulator', key: 'liveMode' } as const, 
 const liveFile = atom({ plugin: 'android-emulator', key: 'liveFile' } as const, null)
 const isProbing = atom({ plugin: 'android-emulator', key: 'isProbing' } as const, false)
 const touchStatus = atom({ plugin: 'android-emulator', key: 'touchStatus' } as const, null)
-const cellMetrics = atom({ plugin: 'android-emulator', key: 'cellMetrics' } as const, DEFAULT_CELL_METRICS)
 
 let loopGeneration = 0
 let framesCounted = 0
 let countingSince = 0
 let lastSvgSeq = -1
 let lastFileSeq = -1
+let inputQueue: Promise<void> = Promise.resolve()
+const lastTouchSeq = new Map<string, number>()
 
 async function sendInput($: EngineInterface, message: Record<string, unknown>): Promise<void> {
   const response = await $.http.fetch(`${HELPER}/input`, {
@@ -65,6 +65,15 @@ async function sendInput($: EngineInterface, message: Record<string, unknown>): 
   if (!response.ok) {
     throw new Error(`live helper answered ${response.status}: ${response.text}`)
   }
+}
+
+function queueInput($: EngineInterface, message: Record<string, unknown>): void {
+  inputQueue = inputQueue
+    .then(() => sendInput($, message))
+    .catch(async error => {
+      const reason = error instanceof Error ? error.message : String(error)
+      await update($, touchStatus, () => `Touch: could not reach the helper (${reason})`).catch(() => undefined)
+    })
 }
 
 async function pollSvg($: EngineInterface): Promise<boolean> {
@@ -256,7 +265,7 @@ async function select($: EngineInterface, serial: string): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'android',
+      name: 'emulator',
       description: 'Show the Android emulator or device screen in a pane',
     })
 
@@ -279,16 +288,29 @@ export const register: Register = on => {
     if (e.requestId !== PANE) return {}
     const data = (e.data ?? {}) as Record<string, unknown>
     try {
-      if (data.type === 'ruler' && (e.element === 'ruler-x' || e.element === 'ruler-y')) {
-        const shot = await read($, liveFrame)
-        if (shot !== null) {
-          const ruler = e.element
-          const cells = { columns: Number(data.columns), rows: Number(data.rows) }
-          await update($, cellMetrics, metrics =>
-            measuredMetrics(metrics, ruler, displaySize(shot.width, shot.height), cells),
-          )
+      if (data.type === 'touch' && e.element === 'touch') {
+        const epoch = String(data.epoch)
+        const seen = lastTouchSeq.get(epoch) ?? 0
+        const fresh = parseTouchEvents(data.events).filter(event => event.seq > seen)
+        const region = { columns: Number(data.columns), rows: Number(data.rows) }
+        if (fresh.length === 0) {
+          await update($, touchStatus, () => `Touch: ready, ${region.columns}x${region.rows} cells`)
+          await sendInput($, { type: 'debug', kind: 'touch-size', surface: e.surface, ...region })
+          return {}
         }
-        await sendInput($, { ...data, type: 'debug', kind: e.element, surface: e.surface })
+        lastTouchSeq.set(epoch, fresh[fresh.length - 1]!.seq)
+        for (const event of fresh) {
+          if (event.type === 'down' || event.type === 'move' || event.type === 'up') {
+            queueInput($, { type: 'touch', phase: event.type, ...touchPoint(event, region) })
+          }
+        }
+        const marks = fresh.filter(event => event.type !== 'move')
+        if (marks.length > 0) {
+          const last = marks[marks.length - 1]!
+          const at = touchPoint(last, region)
+          await update($, touchStatus, () => `Touch: ${last.type} at ${at.x.toFixed(2)}, ${at.y.toFixed(2)}`)
+          queueInput($, { type: 'debug', kind: 'touch', surface: e.surface, ...region, events: marks })
+        }
       } else if (data.type === 'overlay') {
         await update($, touchStatus, () => `Touch: ready, overlay ${data.columns}x${data.rows} cells`)
         await sendInput($, { ...data, type: 'debug', kind: data.type, surface: e.surface })
@@ -311,7 +333,7 @@ export const register: Register = on => {
     return {}
   })
 
-  on('command.run', { command: 'android' }, async $ => {
+  on('command.run', { command: 'emulator' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Android' })
     await refresh($)
     const count = (await read($, devices)).length
@@ -369,19 +391,12 @@ export const register: Register = on => {
         screen = <Text dimColor>The live frame is too large to draw here.</Text>
       } else if (e.surface === 'desktop') {
         const { Client, Svg } = $.ui.resolve(e)
-        const cells = overlayCells(display, await read($, cellMetrics))
         screen = (
-          <Box flexDirection="column" alignSelf="flex-start">
-            <Box flexDirection="row">
-              <Box position="relative">
-                <Svg source={svg} alt="Android screen" width={display.width} height={display.height} />
-                <Box position="absolute" top={0} left={0}>
-                  <Client key="touch" module="./touch-overlay.tsx" width={cells.columns} height={cells.rows} />
-                </Box>
-              </Box>
-              <Client key="ruler-y" module="./ruler.tsx" width={1} />
+          <Box position="relative" alignSelf="flex-start">
+            <Svg source={svg} alt="Android screen" width={display.width} height={display.height} />
+            <Box position="absolute" top={0} left={0} right={0} bottom={0}>
+              <Client key="touch" module="./touch-surface.tsx" width="100%" height="100%" />
             </Box>
-            <Client key="ruler-x" module="./ruler.tsx" width="100%" height={1} />
           </Box>
         )
       } else {

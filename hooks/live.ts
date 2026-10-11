@@ -1,4 +1,4 @@
-import type { CellMetrics, FileFrame, LiveFrame } from '../types'
+import type { FileFrame, LiveFrame } from '../types'
 
 export const HELPER = 'http://127.0.0.1:7357'
 export const LONG_POLL_MS = 1000
@@ -45,7 +45,6 @@ export function streamMarkdown(variant: string): string {
 }
 
 export const DISPLAY_MAX_HEIGHT = 640
-export const DEFAULT_CELL_METRICS: CellMetrics = { advance: 8, lineHeight: 16 }
 
 export function displaySize(frameWidth: number, frameHeight: number): { width: number; height: number } {
   const height = Math.min(frameHeight, DISPLAY_MAX_HEIGHT)
@@ -53,28 +52,40 @@ export function displaySize(frameWidth: number, frameHeight: number): { width: n
   return { width: Math.round((frameWidth * height) / frameHeight), height }
 }
 
-export function overlayCells(
-  display: { width: number; height: number },
-  metrics: CellMetrics,
-): { columns: number; rows: number } {
-  return {
-    columns: Math.max(1, Math.round(display.width / metrics.advance)),
-    rows: Math.max(1, Math.round(display.height / metrics.lineHeight)),
-  }
+export type TouchEvent = {
+  seq: number
+  type: 'down' | 'move' | 'up' | 'enter' | 'leave'
+  x: number
+  y: number
+  fine?: { x: number; y: number }
 }
 
-export function measuredMetrics(
-  metrics: CellMetrics,
-  ruler: 'ruler-x' | 'ruler-y',
-  display: { width: number; height: number },
-  cells: { columns: number; rows: number },
-): CellMetrics {
-  if (ruler === 'ruler-x' && cells.columns > 1) {
-    return { ...metrics, advance: display.width / cells.columns }
-  }
-  if (ruler === 'ruler-y' && cells.rows > 1) {
-    return { ...metrics, lineHeight: display.height / cells.rows }
-  }
+const TOUCH_EVENT_TYPES = new Set(['down', 'move', 'up', 'enter', 'leave'])
 
-  return metrics
+export function parseTouchEvents(value: unknown): TouchEvent[] {
+  if (!Array.isArray(value)) return []
+
+  return value.flatMap(item => {
+    if (typeof item !== 'object' || item === null) return []
+    const { seq, type, x, y, fine } = item as Record<string, unknown>
+    if (typeof seq !== 'number' || typeof type !== 'string' || !TOUCH_EVENT_TYPES.has(type)) return []
+    if (typeof x !== 'number' || typeof y !== 'number') return []
+    const at = fine as { x?: unknown; y?: unknown } | undefined
+    const hasFine = typeof at?.x === 'number' && typeof at.y === 'number'
+
+    return [{ seq, type: type as TouchEvent['type'], x, y, ...(hasFine ? { fine: { x: at.x as number, y: at.y as number } } : {}) }]
+  })
+}
+
+const clampUnit = (value: number) => Math.min(1, Math.max(0, value))
+
+// The region's cells are floored from its pixels: half a cell stands in for the lost fraction.
+export function touchPoint(
+  event: Pick<TouchEvent, 'x' | 'y' | 'fine'>,
+  region: { columns: number; rows: number },
+): { x: number; y: number } {
+  return {
+    x: clampUnit((event.fine?.x ?? event.x + 0.5) / (region.columns + 0.5)),
+    y: clampUnit((event.fine?.y ?? event.y + 0.5) / (region.rows + 0.5)),
+  }
 }

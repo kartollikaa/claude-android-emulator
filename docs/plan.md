@@ -8,7 +8,7 @@ an app. The desktop app's built-in iOS Simulator panel is the reference experien
 
 ## Where it stands
 
-`v0.1.0` is a walking skeleton: `/android` opens a pane that lists adb devices and shows one
+`v0.1.0` is a walking skeleton: `/emulator` opens a pane that lists adb devices and shows one
 screenshot of the selected device (adb `screencap` → PNG file → `Image` on the terminal,
 downscaled JPEG inside an `Svg` on remote surfaces). Validated, type-checked, tested on the
 `terminal` and `desktop` surfaces. See the spike log at the end for what was checked against a
@@ -22,7 +22,7 @@ real emulator.
 | --- | --- | --- |
 | Pixels | `Image`: PNG/RGBA bytes, or a **file or POSIX shared-memory name another local process wrote**, read by the terminal itself (kitty graphics protocol: Ghostty, kitty) — the pixels never cross `$` | No `Image`, no `Raster`. Only `Svg`, source capped at 131 072 characters → a JPEG data URI of roughly 95 KB |
 | Frame rate | `$.ui.blit({ requestId, key, source })` swaps a keyed `Image` without a redraw, folded to the surface's frame rate | Each frame is a state write → re-render → tree sent to the client: a few fps at best |
-| Pointer and keys | `Client` surface module: `onPointer` with sub-cell `fine` coordinates (documented for "a module showing another program's pixels"), `onKey`, `post` → `ui.message` | `Client` exists on desktop too, so the same overlay can catch taps |
+| Pointer and keys | `Client` surface module: `onPointer` with sub-cell `fine` coordinates (documented for "a module showing another program's pixels"), `onKey`, `post` → `ui.message` | `Client` runs in a sandboxed frame: whole cells only (no `fine`), pointer capture from press to release. Its region is as tall as what the module draws, capped by the `Client`'s own height, which never stretches it |
 | Talking to a helper | `$.process.spawn` (text stdout, child dies with the module), `$.process.run`, `$.http.fetch` with `socketPath` (HTTP over a Unix socket), `$.fs` | same |
 | Claude-facing tools | `$.tool.register` → `mcp__android-emulator__<name>`, served by a `tool.call` hook | same |
 
@@ -81,8 +81,10 @@ helper needed. This is what the skeleton uses.
 ### Risks
 
 - The mod API is early access and changes between Claude Code releases.
-- A third-party report claims the desktop app has a gated "Android Emulator" toggle. If Anthropic
-  ships native Android support in the desktop app, the terminal pane and Claude tools still stand.
+- The desktop app already ships a built-in Android Emulator panel and Claude tool, switched off by a
+  server-side rollout flag (its settings row stays hidden while the flag is off). Once it reaches an
+  account, it outclasses this mod's desktop pane; the Claude tools would be the remaining value.
+- The built-in `/mobile` command claims `/android` as an alias, so the mod's command is `/emulator`.
 - The kitty graphics protocol limits terminal pixels to Ghostty and kitty; elsewhere the pane shows
   `alt` text (a `Raster` low-res fallback is possible).
 
@@ -113,7 +115,7 @@ Frames never land in the plugin folder (the session hot-reloads on changes there
 One PR per item, each reviewed before the next starts.
 
 1. **Spikes** (findings go into the spike log, no product code):
-   1. The desktop Code tab draws a JPEG data URI inside `Svg` (run `/android` with a device up).
+   1. The desktop Code tab draws a JPEG data URI inside `Svg` (run `/emulator` with a device up).
    2. Ghostty draws the `Image`; a `Client` laid over it (`position: absolute`) still gets pointer
       events.
    3. gRPC `streamScreenshot` from a throwaway client: fps at pane size, row order, token mode.
@@ -135,7 +137,8 @@ One PR per item, each reviewed before the next starts.
 
 ## Decisions
 
-- **Desktop first.** The desktop app's Code tab comes before the terminal pane.
+- **Desktop only.** The owner dropped the terminal pane: the mod targets the desktop app's Code tab.
+  The terminal live code stays as a prototype until the desktop path settles.
 - **Bridge language: Go** — first-class gRPC, one static binary per platform, easy
   cross-compilation; FFmpeg is spawned for device decoding at first.
 - **A dedicated pane, like the iOS Simulator's, on the desktop and in the terminal** — not the
@@ -160,4 +163,6 @@ One PR per item, each reviewed before the next starts.
 | Emulator frame rate | `-no-window` selects software rendering (`swangle` / `lavapipe`) and caps the gRPC stream far below the display rate. `-qt-hide-window -gpu host` (how Android Studio launches it) renders on the host GPU and roughly triples the stream rate under continuous swipes, at either stream size. Always launch that way |
 | MJPEG in Chromium | A plain `<img>` plays the helper's MJPEG stream in the app's Chromium; each part must end with the boundary or the frame never shows |
 | Option B: live mod pane | Owner reports 0–2 fps on the desktop: every frame is a state write, a re-render and a new `Svg` image. The emulator and the helper's JPEG encoding are not the bottleneck. Next: the stream test, to find an embedding the desktop plays natively |
-| Ghostty `Image`, `Client` over `Image` | Not yet run (terminal comes after desktop) |
+| Desktop touch overlay | Never received a press: a `Client` drew `height="100%"` content inside an auto-height region, so the region collapsed to one row whatever `height` the `Client` was given. The desktop's frame runtime shows why: the region is a flex item that shrinks to the `Client`'s height but never grows to it |
+| Desktop touch surface | A `Client` sized `100%` × `100%` inside an absolute `Box` pinned to the picture (`top`/`left`/`right`/`bottom` 0), drawing content taller than any picture, so its region shrinks to exactly the picture; presses, drags and releases stream to the emulator as touches. Passes the plugin tests; awaiting a check on the desktop app |
+| Ghostty `Image`, `Client` over `Image` | Not run: the terminal is out of scope |

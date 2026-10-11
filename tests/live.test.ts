@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { parseLiveFrame } from '../hooks/live'
+import { parseLiveFrame, parseTouchEvents, touchPoint } from '../hooks/live'
 
 const PANE = {
   plugin: 'android-emulator',
@@ -45,8 +45,39 @@ describe('parseLiveFrame', () => {
   })
 })
 
+describe('touchPoint', () => {
+  test('a cell maps to its centre, the floored fraction counted as half a cell', () => {
+    expect(touchPoint({ x: 17, y: 15 }, { columns: 36, rows: 32 })).toEqual({ x: 17.5 / 36.5, y: 15.5 / 32.5 })
+  })
+
+  test('uses the sub-cell position when the surface reports one, and clamps a captured drag', () => {
+    expect(touchPoint({ x: 9, y: 4, fine: { x: 9.25, y: 4.75 } }, { columns: 36, rows: 32 })).toEqual({
+      x: 9.25 / 36.5,
+      y: 4.75 / 32.5,
+    })
+    expect(touchPoint({ x: -3, y: 40 }, { columns: 36, rows: 32 })).toEqual({ x: 0, y: 1 })
+  })
+})
+
+describe('parseTouchEvents', () => {
+  test('keeps well-formed pointer events and drops the rest', () => {
+    expect(
+      parseTouchEvents([
+        { seq: 1, type: 'down', x: 3, y: 0 },
+        { seq: 2, type: 'scroll', x: 3, y: 0 },
+        { seq: 3, type: 'up', x: '3', y: 0 },
+        { seq: 4, type: 'move', x: 3, y: 1, fine: { x: 3.5, y: 1.25 } },
+      ]),
+    ).toEqual([
+      { seq: 1, type: 'down', x: 3, y: 0 },
+      { seq: 4, type: 'move', x: 3, y: 1, fine: { x: 3.5, y: 1.25 } },
+    ])
+    expect(parseTouchEvents('nope')).toEqual([])
+  })
+})
+
 describe('live mode on desktop', () => {
-  test('Go live draws the helper frame with a touch overlay over it', async ($, on) => {
+  test('Go live draws the helper frame with a touch surface the size of the picture', async ($, on) => {
     mock.clock(on)
     fakeHelper(on, [])
     const ui = await $.ui.mount(PANE)
@@ -55,60 +86,53 @@ describe('live mode on desktop', () => {
 
     const picture = await ui.find({ type: 'Svg' })
     expect(JSON.stringify(picture)).toContain('data:image/jpeg;base64,QUJD')
+    const touch = JSON.stringify(await ui.find({ type: 'Client', key: 'touch' }))
+    expect(touch).toContain('touch-surface.tsx')
+    expect(touch).toMatch(/"width":"100%","height":"100%"/)
     expect(await ui.find({ key: 'nav-GoHome' })).toBeDefined()
     expect(await ui.find({ key: 'live', text: /Stop live/ })).toBeDefined()
     await ui.press({ key: 'live' })
     await ui.unmount()
   })
 
-  test('a press on an overlay with no size says so instead of tapping a corner', async ($, on) => {
-    mock.clock(on)
-    const posted: unknown[] = []
-    fakeHelper(on, posted)
-    const ui = await $.ui.mount(PANE)
-    await ui.press({ key: 'live' })
-
-    await ui.pointer({ in: 'touch', type: 'down', x: 2, y: 10, button: 'left' })
-    await ui.pointer({ in: 'touch', type: 'up', x: 2, y: 10, button: 'left' })
-
-    expect(posted).toEqual([expect.objectContaining({ type: 'debug', kind: 'pointer', columns: 0 })])
-    expect(await ui.find({ type: 'Text', text: /overlay has no size/ })).toBeDefined()
-    await ui.press({ key: 'live' })
-    await ui.unmount()
-  })
-
-  test('a drag on the laid-out overlay reaches the helper as one gesture', async ($, on) => {
+  test('a tap on the touch surface reaches the helper as a touch down and up', async ($, on) => {
     mock.clock(on)
     const posted: Array<Record<string, unknown>> = []
     fakeHelper(on, posted)
     const ui = await $.ui.mount(PANE)
     await ui.press({ key: 'live' })
-    await ui.resize({ in: 'touch', columns: 30, rows: 60 })
+    await ui.resize({ in: 'touch', columns: 36, rows: 32 })
 
-    await ui.pointer({ in: 'touch', type: 'down', x: 15, y: 50, button: 'left' })
-    await ui.pointer({ in: 'touch', type: 'move', x: 15, y: 30, button: 'left' })
-    await ui.pointer({ in: 'touch', type: 'up', x: 15, y: 10, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'down', x: 17, y: 15, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'up', x: 17, y: 15, button: 'left' })
 
-    expect(posted.map(message => message.type)).toEqual(['debug', 'gesture'])
-    const gesture = posted[1] as { points: Array<{ x: number; y: number }> }
-    expect(gesture.points[0]).toEqual(expect.objectContaining({ x: 15.5 / 30, y: 50.5 / 60 }))
+    const at = { x: 17.5 / 36.5, y: 15.5 / 32.5 }
+    expect(posted.filter(message => message.type === 'touch')).toEqual([
+      { type: 'touch', phase: 'down', ...at },
+      { type: 'touch', phase: 'up', ...at },
+    ])
+    expect(await ui.find({ type: 'Text', text: /Touch: up at 0\.48, 0\.48/ })).toBeDefined()
     await ui.press({ key: 'live' })
     await ui.unmount()
   })
 
-  test('the rulers measure the code-font cell and size the touch overlay to the picture', async ($, on) => {
+  test('a drag streams down, moves and up in order', async ($, on) => {
     mock.clock(on)
-    fakeHelper(on, [])
+    const posted: Array<Record<string, unknown>> = []
+    fakeHelper(on, posted)
     const ui = await $.ui.mount(PANE)
     await ui.press({ key: 'live' })
+    await ui.resize({ in: 'touch', columns: 36, rows: 32 })
 
-    await ui.resize({ in: 'ruler-x', columns: 36, rows: 1 })
-    await ui.resize({ in: 'ruler-y', columns: 1, rows: 32 })
-    await ui.advance(600)
+    await ui.pointer({ in: 'touch', type: 'down', x: 18, y: 28, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'move', x: 18, y: 20 })
+    await ui.pointer({ in: 'touch', type: 'move', x: 18, y: 16, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'move', x: 18, y: 8, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'up', x: 18, y: 4, button: 'left' })
 
-    const touch = JSON.stringify(await ui.find({ type: 'Client', key: 'touch' }))
-    expect(touch).toMatch(/"width":36/)
-    expect(touch).toMatch(/"height":32/)
+    const touches = posted.filter(message => message.type === 'touch') as Array<{ phase: string; y: number }>
+    expect(touches.map(touch => touch.phase)).toEqual(['down', 'move', 'move', 'up'])
+    expect(touches.map(touch => touch.y)).toEqual([28.5 / 32.5, 16.5 / 32.5, 8.5 / 32.5, 4.5 / 32.5])
     await ui.press({ key: 'live' })
     await ui.unmount()
   })
