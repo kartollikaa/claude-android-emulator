@@ -23,7 +23,14 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
+
+// The bridge boots emulators by running its own binary as a launcher; in tests that binary is this one.
+func TestMain(m *testing.M) {
+	sdk.RunLauncherIfAsked()
+	os.Exit(m.Run())
+}
 
 const (
 	deviceWidth  = 8
@@ -47,14 +54,14 @@ func startBridge(t *testing.T, options ...func(*Config)) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	config := Config{
-		DiscoveryDir:     dir,
-		StreamWidth:      streamWidth,
-		RetryInterval:    20 * time.Millisecond,
-		BootPollInterval: 20 * time.Millisecond,
-		Logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
-		SDKCandidates:    []string{filepath.Join(dir, "no-sdk")},
-		AVDHome:          t.TempDir(),
-		LogDir:           t.TempDir(),
+		DiscoveryDir:  dir,
+		StreamWidth:   streamWidth,
+		RetryInterval: 20 * time.Millisecond,
+		PollInterval:  20 * time.Millisecond,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		SDKCandidates: []string{filepath.Join(dir, "no-sdk")},
+		AVDHome:       t.TempDir(),
+		LogDir:        t.TempDir(),
 	}
 	for _, option := range options {
 		option(&config)

@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/ini"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/proc"
 )
 
 // Emulator is one running emulator that serves gRPC; AVD is the name it was started with.
@@ -61,7 +62,7 @@ func RunningAVDs(dir string) (map[string]bool, error) {
 	avds := map[string]bool{}
 	for _, file := range all {
 		// A killed emulator leaves its file behind.
-		if avd := file.values["avd.id"]; avd != "" && isAlive(file.pid) {
+		if avd := file.values["avd.id"]; avd != "" && proc.Alive(file.pid) {
 			avds[avd] = true
 		}
 	}

@@ -1,8 +1,10 @@
 // Command android-bridge serves the running emulator's screen and input on http://127.0.0.1:<port>.
+// It writes {"liveView":"<url>"} to stdout once it listens; logs go to stderr.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,10 +17,12 @@ import (
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/live"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
 func main() {
-	port := flag.Int("port", 7357, "port of the live view on 127.0.0.1")
+	sdk.RunLauncherIfAsked()
+	port := flag.Int("port", 7357, "port of the live view on 127.0.0.1; 0 picks a free one")
 	streamWidth := flag.Int("stream-width", 540, "width in pixels the emulator streams frames at")
 	discoveryDir := flag.String("discovery-dir", discovery.DefaultDir(), "where running emulators write pid_<pid>.ini")
 	sdkDir := flag.String("sdk", "", "Android SDK folder (default: ANDROID_HOME, ANDROID_SDK_ROOT, then the platform's default)")
@@ -48,6 +52,7 @@ func run(port int, config live.Config) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go stopWithParent(ctx, stop)
 
 	bridge := live.New(config)
 	go bridge.Run(ctx)
@@ -59,10 +64,35 @@ func run(port int, config live.Config) error {
 		defer cancel()
 		server.Shutdown(shutdown)
 	}()
-	config.Logger.Info("live view ready", "url", "http://"+listener.Addr().String())
+	url := "http://" + listener.Addr().String()
+	config.Logger.Info("live view ready", "url", url)
+	if err := json.NewEncoder(os.Stdout).Encode(announcement{LiveView: url}); err != nil {
+		return err
+	}
 	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 
 	return nil
+}
+
+// announcement is the one line the bridge writes to stdout, for the mod that started it.
+type announcement struct {
+	LiveView string `json:"liveView"`
+}
+
+// stopWithParent stops the bridge once its parent is gone; macOS and Linux then give it a new parent, Windows never does.
+func stopWithParent(ctx context.Context, stop context.CancelFunc) {
+	parent := os.Getppid()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+		if os.Getppid() != parent {
+			stop()
+			return
+		}
+	}
 }

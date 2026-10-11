@@ -10,11 +10,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/ini"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/proc"
 )
 
 // SDK is an Android SDK folder that holds the emulator.
@@ -37,8 +40,12 @@ func (e *NotFoundError) Error() string {
 	return "no Android SDK with an emulator in " + strings.Join(e.Looked, ", ")
 }
 
-// The emulator itself waits 20 s for the guest to shut down before it kills it.
-const stopGrace = 30 * time.Second
+const (
+	// Longer than the emulator's own wait for its guest to shut down.
+	stopGrace = 30 * time.Second
+	// Set to the log path, it makes a run of this binary the emulator launcher.
+	launcherLog = "ANDROID_BRIDGE_LAUNCHER_LOG"
+)
 
 var (
 	avdName  = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]*$`)
@@ -141,37 +148,81 @@ func describe(name, avdHome string) AVD {
 	return avd
 }
 
-// Boot starts the emulator for avd, detached from this process, with its output in logPath.
-func (s SDK) Boot(avd string, grpcPort int, logPath string) (*exec.Cmd, error) {
+// Boot starts the emulator for avd with its output in logPath, through a launcher that exits at once:
+// the emulator then belongs to no process tree of the bridge's, so whatever kills that tree spares it.
+func (s SDK) Boot(avd string, grpcPort int, logPath string) (*os.Process, error) {
 	if !avdName.MatchString(avd) {
 		return nil, errors.New("not an AVD name: " + avd)
 	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return nil, err
 	}
-	log, err := os.Create(logPath)
+	self, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	defer log.Close()
-	cmd := exec.Command(s.Emulator(), "-avd", avd, "-qt-hide-window", "-gpu", "host",
+	launcher := exec.Command(self, s.Emulator(), "-avd", avd, "-qt-hide-window", "-gpu", "host",
 		"-grpc", fmt.Sprint(grpcPort), "-grpc-use-token")
+	launcher.Env = append(os.Environ(), launcherLog+"="+logPath)
+	var stderr strings.Builder
+	launcher.Stderr = &stderr
+	output, err := launcher.Output()
+	if err != nil {
+		return nil, fmt.Errorf("launching the emulator: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return nil, fmt.Errorf("the emulator launcher answered %q", output)
+	}
+
+	return os.FindProcess(pid)
+}
+
+// RunLauncherIfAsked makes this process the launcher Boot starts: it starts the emulator, prints its pid and exits.
+func RunLauncherIfAsked() {
+	logPath := os.Getenv(launcherLog)
+	if logPath == "" {
+		return
+	}
+	pid, err := launch(os.Args[1:], logPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(pid)
+	os.Exit(0)
+}
+
+func launch(argv []string, logPath string) (int, error) {
+	log, err := os.Create(logPath)
+	if err != nil {
+		return 0, err
+	}
+	defer log.Close()
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(variable string) bool {
+		return strings.HasPrefix(variable, launcherLog+"=")
+	})
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.SysProcAttr = detached()
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return 0, err
 	}
 
-	return cmd, nil
+	return cmd.Process.Pid, nil
 }
 
 // Stop asks a booted emulator to shut down and kills it if it is still there after stopGrace.
-func Stop(cmd *exec.Cmd) {
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		cmd.Process.Kill()
+func Stop(emulator *os.Process) {
+	if err := emulator.Signal(syscall.SIGTERM); err != nil {
+		emulator.Kill()
 		return
 	}
-	time.AfterFunc(stopGrace, func() { cmd.Process.Kill() })
+	time.AfterFunc(stopGrace, func() {
+		if proc.Alive(emulator.Pid) {
+			emulator.Kill()
+		}
+	})
 }
 
 // LastError picks the line of an emulator log that explains a failed boot.

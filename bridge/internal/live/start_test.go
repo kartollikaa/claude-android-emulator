@@ -3,7 +3,9 @@
 package live
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -224,6 +227,23 @@ func TestLaunchedEmulatorIsDetached(t *testing.T) {
 	}
 }
 
+func TestLaunchedEmulatorIsOutsideTheBridgesTree(t *testing.T) {
+	root := fakeSDK(t, stayingUp)
+	h := startBridge(t, withSDK(root))
+
+	if status := start(t, h, "Pixel_7"); status != http.StatusAccepted {
+		t.Fatalf("start answered %d, want 202", status)
+	}
+
+	eventually(t, func() bool { return len(launches(root)) == 1 }, "the emulator being launched")
+	pid := launches(root)[0].pid
+	for ancestor := parentOf(t, pid); ancestor > 1; ancestor = parentOf(t, ancestor) {
+		if ancestor == os.Getpid() {
+			t.Fatalf("emulator %d descends from the bridge %d, so killing the bridge's tree kills it", pid, os.Getpid())
+		}
+	}
+}
+
 func TestStartRefusesWhatItCannotLaunch(t *testing.T) {
 	root := fakeSDK(t, stayingUp)
 	h := startBridge(t, withSDK(root))
@@ -342,6 +362,16 @@ func TestBootProgress(t *testing.T) {
 // standardOutput reads what fd 1 of pid is, as lsof names it: its type (REG, PIPE) and path.
 func standardOutput(t *testing.T, pid int) (kind, name string) {
 	t.Helper()
+	if runtime.GOOS == "linux" {
+		name, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/1", pid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Stat(name); err == nil && info.Mode().IsRegular() {
+			return "REG", name
+		}
+		return "PIPE", name
+	}
 	output, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "1", "-F", "tn").Output()
 	if err != nil {
 		t.Fatalf("lsof: %v", err)
@@ -361,7 +391,30 @@ func standardOutput(t *testing.T, pid int) (kind, name string) {
 	return kind, name
 }
 
-// ownDiscoveryFile names a discovery file after this test's own pid, which is alive.
+func parentOf(t *testing.T, pid int) int {
+	t.Helper()
+	var field string
+	if runtime.GOOS == "linux" {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterName := string(stat[bytes.LastIndexByte(stat, ')')+1:])
+		field = strings.Fields(afterName)[1]
+	} else {
+		output, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
+		if err != nil {
+			t.Fatalf("ps: %v", err)
+		}
+		field = strings.TrimSpace(string(output))
+	}
+	parent, err := strconv.Atoi(field)
+	if err != nil {
+		t.Fatalf("parent of %d: %q", pid, field)
+	}
+	return parent
+}
+
 func ownDiscoveryFile(h *harness) string {
 	return filepath.Join(h.dir, "pid_"+strconv.Itoa(os.Getpid())+".ini")
 }
