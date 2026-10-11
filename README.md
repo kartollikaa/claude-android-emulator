@@ -6,8 +6,8 @@ built-in iOS Simulator panel.
 
 > **Status: in development.** `/emulator` opens the live view, its Start button boots a virtual
 > device, a toolbar rotates it, takes screenshots and recordings, and opens App info, and a settings
-> panel changes its theme, font size, display size and language. Next: tools Claude can drive the
-> emulator with, and a release with prebuilt bridges.
+> panel changes its theme, font size, display size and language, and Claude sees and drives the
+> emulator through its own tool. Next: a release with prebuilt bridges.
 > See [docs/plan.md](docs/plan.md).
 
 ## Requirements
@@ -51,6 +51,16 @@ The toolbar above the screen:
 
 The emulator keeps running when the session ends, as Android Studio's does; the next `/emulator`
 shows it again.
+
+### Claude drives it too
+
+Claude has an `emulator` tool on the same device the live view shows, so it can check the app it
+is building: ask it to run the app and look at a screen, or to walk through a flow. With it Claude
+boots a virtual device when none runs, takes screenshots, taps, swipes, types and presses Back,
+Home and the other keys, opens links and deep links, launches an installed app or installs an
+`.apk` first, reads logcat (one app's or the whole device's), changes the dark theme, font size,
+display size and language, and rotates the device. Each action shows in the live view as it
+happens. The tool starts the bridge by itself, so it works without `/emulator` too.
 
 ## Develop
 
@@ -125,6 +135,16 @@ back; one value out of range, named with its range in the answer, refuses the wh
 `POST /settings/reset` returns the theme, font scale and density to their defaults, and
 `GET /settings/locales` lists the tags the device can switch to.
 
+Claude's tool goes through its own routes. `GET /screen` answers the screen as a base64 JPEG with
+its `width`, `height` and `rotation`, scaled down from the panel and upright; `POST /gesture` takes
+`x`, `y` and, for a swipe, `x2`, `y2` in that picture's pixels, with the `duration` in seconds the
+finger stays down. `POST /open-url` takes a `url` with its scheme, `POST /launch` a `package`, an
+`apk` (an absolute path, installed first; its id read with the newest build-tools' `aapt2`) or both,
+and answers the `package` it started; `POST /logs` takes an optional `package` and `lines` and
+answers the `log`. `GET /status?wait=booted` holds the answer until the emulator has booted, its
+launch failed or nothing is starting, and any `/status` waits until the bridge has first looked for a
+running emulator, so a bridge just started does not report none.
+
 The page serves only this machine: the bridge listens on 127.0.0.1 and refuses requests whose
 `Host` or `Origin` is not its own, so no other web page can read the screen or drive the emulator.
 
@@ -134,8 +154,9 @@ The page serves only this machine: the bridge listens on 127.0.0.1 and refuses r
 | --- | --- |
 | `.claude-plugin/plugin.json` | The mod's manifest |
 | `.claude-plugin/marketplace.json` | Makes this repository a one-plugin marketplace |
-| `hooks/register.ts` | The hooks module: `/emulator` finds or builds the bridge, runs it and asks Claude to open the live view |
+| `hooks/register.ts` | The hooks module: `/emulator` finds or builds the bridge, runs it and asks Claude to open the live view; serves Claude's `emulator` tool |
 | `hooks/bridge.ts` | Pure helpers: the platform's binary, the bridge's announcement, the prompt |
+| `hooks/tool.ts` | Claude's `emulator` tool: its schema, and each action as calls to the bridge |
 | `bridge/` | The Go bridge: SDK and AVDs, the emulator launcher, discovery, gRPC client, the live view page and its socket |
 | `bridge/proto/` | Pinned copy of the Android SDK's `emulator_controller.proto`; `go -C bridge generate ./...` regenerates `bridge/internal/emulatorpb/` |
 | `tests/` | `claude plugin test` suites |
