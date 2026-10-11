@@ -14,6 +14,7 @@
     --line: #dedcd3;
     --bezel: #1c1c1e;
     --focus: #2c84db;
+    --bezel-width: 8px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -35,8 +36,8 @@
   }
   .device { position: relative; flex: 1; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; }
   canvas {
-    box-sizing: content-box; height: calc(100% - 16px); max-width: calc(100% - 16px); aspect-ratio: var(--ratio, 9 / 20);
-    border: 8px solid var(--bezel); border-radius: 28px; background: var(--bezel);
+    box-sizing: content-box; width: 0; height: 0;
+    border: var(--bezel-width) solid var(--bezel); border-radius: 28px; background: var(--bezel);
     touch-action: none; cursor: default; outline: none;
   }
   canvas:focus-visible { box-shadow: 0 0 0 3px var(--focus); }
@@ -60,7 +61,7 @@
 </head>
 <body class="offline">
   <div class="device">
-    <canvas id="screen" tabindex="0" aria-label="Android screen: click to tap, drag to swipe, type to send keys"></canvas>
+    <canvas id="screen" width="540" height="1200" tabindex="0" aria-label="Android screen: click to tap, drag to swipe, type to send keys"></canvas>
     <div class="waiting" id="waiting">
       <strong>Waiting for the emulator</strong>
       <span>Start one with gRPC on:</span>
@@ -98,8 +99,8 @@
     if (!image || image.width !== width || image.height !== height) {
       canvas.width = width
       canvas.height = height
-      canvas.style.setProperty('--ratio', `${width} / ${height}`)
       image = context.createImageData(width, height)
+      fit()
     }
     const out = image.data
     for (let from = 0, to = 0; from < rgb.length; from += 3, to += 4) {
@@ -110,6 +111,17 @@
     }
     context.putImageData(image, 0, 0)
   }
+
+  // Scale the screen to the side that runs out first, so a resize never changes its proportions.
+  const device = document.querySelector('.device')
+  function fit() {
+    const bezel = 2 * parseFloat(getComputedStyle(canvas).borderLeftWidth)
+    const room = device.getBoundingClientRect()
+    const scale = Math.max(0, Math.min((room.width - bezel) / canvas.width, (room.height - bezel) / canvas.height))
+    canvas.style.width = `${Math.floor(canvas.width * scale)}px`
+    canvas.style.height = `${Math.floor(canvas.height * scale)}px`
+  }
+  new ResizeObserver(fit).observe(device)
 
   const send = message => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message))
 
