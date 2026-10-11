@@ -1,8 +1,8 @@
 import type { CellMetrics, FileFrame, LiveFrame } from '../types'
 
 export const HELPER = 'http://127.0.0.1:7357'
-export const POLL_MS = 100
-export const FILE_POLL_MS = 25
+export const LONG_POLL_MS = 1000
+export const IDLE_MS = 30
 export const RATE_WINDOW_MS = 1000
 
 export function parseLiveFrame(text: string): LiveFrame | null {

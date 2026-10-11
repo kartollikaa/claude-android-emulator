@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import {
   CAPTURE_SCRIPT,
@@ -12,9 +12,9 @@ import {
 import type { LiveMode } from '../types'
 import {
   DEFAULT_CELL_METRICS,
-  FILE_POLL_MS,
   HELPER,
-  POLL_MS,
+  IDLE_MS,
+  LONG_POLL_MS,
   PROBE_VARIANTS,
   RATE_WINDOW_MS,
   displaySize,
@@ -50,10 +50,10 @@ const isProbing = atom({ plugin: 'android-emulator', key: 'isProbing' } as const
 const touchStatus = atom({ plugin: 'android-emulator', key: 'touchStatus' } as const, null)
 const cellMetrics = atom({ plugin: 'android-emulator', key: 'cellMetrics' } as const, DEFAULT_CELL_METRICS)
 
-let poller: Timer | null = null
-let isFetching = false
+let loopGeneration = 0
 let framesCounted = 0
 let countingSince = 0
+let lastSvgSeq = -1
 let lastFileSeq = -1
 
 async function sendInput($: EngineInterface, message: Record<string, unknown>): Promise<void> {
@@ -67,33 +67,34 @@ async function sendInput($: EngineInterface, message: Record<string, unknown>): 
   }
 }
 
-async function pollSvg($: EngineInterface): Promise<void> {
-  const after = (await read($, liveFrame))?.seq ?? -1
-  const response = await $.http.fetch(`${HELPER}/frame?after=${after}`)
+async function pollSvg($: EngineInterface): Promise<boolean> {
+  const response = await $.http.fetch(`${HELPER}/frame?after=${lastSvgSeq}&wait=${LONG_POLL_MS}`)
   if (!response.ok) {
     throw new Error(`live helper answered ${response.status}`)
   }
   const next = parseLiveFrame(response.text)
-  if (next !== null) {
-    await update($, liveFrame, () => next)
-    framesCounted += 1
-  }
+  if (next === null || next.seq === lastSvgSeq) return false
+  lastSvgSeq = next.seq
+  framesCounted += 1
+  await update($, liveFrame, () => next)
+
+  return true
 }
 
-async function pollFile($: EngineInterface, isRateTick: boolean): Promise<void> {
-  const response = await $.http.fetch(`${HELPER}/frame-file?after=${lastFileSeq}`)
+async function pollFile($: EngineInterface, isRateTick: boolean): Promise<boolean> {
+  const response = await $.http.fetch(`${HELPER}/frame-file?after=${lastFileSeq}&wait=${LONG_POLL_MS}`)
   if (!response.ok) {
     throw new Error(`live helper answered ${response.status}`)
   }
   const next = parseFileFrame(response.text)
-  if (next === null) return
+  if (next === null || next.seq === lastFileSeq) return false
   lastFileSeq = next.seq
   framesCounted += 1
   const drawn = await read($, liveFile)
   const isNewSize = drawn === null || drawn.width !== next.width || drawn.height !== next.height
   if (isNewSize || isRateTick) {
     await update($, liveFile, () => next)
-    return
+    return true
   }
   const blitted = await $.ui.blit({
     requestId: PANE,
@@ -103,33 +104,39 @@ async function pollFile($: EngineInterface, isRateTick: boolean): Promise<void> 
   if ('deny' in blitted && blitted.deny !== undefined) {
     await update($, liveFile, () => next)
   }
+
+  return true
 }
 
-async function poll($: EngineInterface): Promise<void> {
-  if (isFetching) return
-  isFetching = true
+async function pollOnce($: EngineInterface): Promise<boolean> {
+  const now = await $.clock.now()
+  const isRateTick = now - countingSince >= RATE_WINDOW_MS
+  const isNew = (await read($, liveMode)) === 'file' ? await pollFile($, isRateTick) : await pollSvg($)
+  if (isRateTick) {
+    const rate = Math.round((framesCounted * 1000) / (now - countingSince))
+    framesCounted = 0
+    countingSince = now
+    await update($, liveRate, () => rate)
+  }
+
+  return isNew
+}
+
+async function runLive($: EngineInterface, generation: number): Promise<void> {
   try {
-    const now = await $.clock.now()
-    const isRateTick = now - countingSince >= RATE_WINDOW_MS
-    if ((await read($, liveMode)) === 'file') {
-      await pollFile($, isRateTick)
-    } else {
-      await pollSvg($)
-    }
-    if (isRateTick) {
-      const rate = Math.round((framesCounted * 1000) / (now - countingSince))
-      framesCounted = 0
-      countingSince = now
-      await update($, liveRate, () => rate)
+    while (generation === loopGeneration) {
+      const isNew = await pollOnce($)
+      if (!isNew && generation === loopGeneration) {
+        await $.clock.sleep(IDLE_MS)
+      }
     }
   } catch (error) {
+    if (generation !== loopGeneration) return
     const reason = error instanceof Error ? error.message : String(error)
     await stopLive($)
     await update($, problem, () =>
       `Live helper not reachable at ${HELPER} (${reason}). Start it: node prototypes/live-helper/server.mjs`,
     )
-  } finally {
-    isFetching = false
   }
 }
 
@@ -137,18 +144,16 @@ async function startLive($: EngineInterface, mode: LiveMode): Promise<void> {
   await update($, liveMode, () => mode)
   await update($, isLive, () => true)
   await update($, problem, () => null)
-  if (poller === null) {
-    framesCounted = 0
-    lastFileSeq = -1
-    countingSince = await $.clock.now()
-    poller = $.clock.every(mode === 'file' ? FILE_POLL_MS : POLL_MS, () => void poll($))
-  }
-  await poll($)
+  loopGeneration += 1
+  framesCounted = 0
+  lastSvgSeq = -1
+  lastFileSeq = -1
+  countingSince = await $.clock.now()
+  void runLive($, loopGeneration)
 }
 
 async function stopLive($: EngineInterface): Promise<void> {
-  poller?.cancel()
-  poller = null
+  loopGeneration += 1
   await update($, isLive, () => false)
   await update($, liveRate, () => 0)
   await update($, liveFile, () => null)

@@ -11,13 +11,22 @@ import { WebSocketServer } from 'ws'
 
 const PORT = Number(process.env.PORT ?? 7357)
 const STREAM_WIDTH = Number(process.env.STREAM_WIDTH ?? 540)
-const PANE_WIDTH = Number(process.env.PANE_WIDTH ?? 360)
+const PANE_WIDTH = Number(process.env.PANE_WIDTH ?? 300)
+const LONG_POLL_MAX_MS = 2000
 const SDK = process.env.ANDROID_HOME ?? path.join(os.homedir(), 'Library/Android/sdk')
 const DISCOVERY = path.join(os.homedir(), 'Library/Caches/TemporaryItems/avd/running')
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const TOUCH_PRESSURE = 1
 const FILE_SLOTS = 8
 const FILE_DIRECTORY = path.join(os.tmpdir(), 'claude-android-emulator', 'live')
+const EVENTS_LOG = path.join(os.tmpdir(), 'claude-android-emulator', 'helper-events.log')
+fs.mkdirSync(path.dirname(EVENTS_LOG), { recursive: true })
+
+function logEvent(line) {
+  const stamped = `${new Date().toISOString()} ${line}`
+  console.log(stamped)
+  fs.appendFileSync(EVENTS_LOG, `${stamped}\n`)
+}
 const TAP_MAX_TRAVEL = 0.02
 const TAP_MAX_MS = 300
 
@@ -64,6 +73,19 @@ console.log(`emulator ${emulator.serial} on grpc :${emulator.port}, screen ${dev
 let latest = null
 let framesSinceReport = 0
 const polls = { frame: 0, 'frame-file': 0 }
+let frameWaiters = []
+
+function nextFrameAfter(seq, waitMs) {
+  if (latest !== null && latest.seq !== seq) return Promise.resolve(latest)
+  return new Promise(resolve => {
+    const waiter = frame => { clearTimeout(timer); resolve(frame) }
+    const timer = setTimeout(() => {
+      frameWaiters = frameWaiters.filter(w => w !== waiter)
+      resolve(latest)
+    }, Math.min(waitMs, LONG_POLL_MAX_MS))
+    frameWaiters.push(waiter)
+  })
+}
 const sockets = new Set()
 const mjpegClients = new Set()
 const BOUNDARY = 'androidframe'
@@ -81,6 +103,9 @@ function startStream() {
   frames.on('data', image => {
     latest = { seq: image.seq, width: image.format.width, height: image.format.height, rgb: image.image, jpeg: null }
     framesSinceReport += 1
+    const waiting = frameWaiters
+    frameWaiters = []
+    for (const waiter of waiting) waiter(latest)
     if (mjpegClients.size > 0) pushMjpeg(latest)
     if (sockets.size === 0) return
     const packet = framePacket(latest)
@@ -92,14 +117,16 @@ function startStream() {
   })
 }
 startStream()
+const RATE_REPORT_MS = 5000
 setInterval(() => {
+  const perSecond = count => Math.round((count * 1000) / RATE_REPORT_MS)
   const polled = Object.entries(polls).filter(([, count]) => count > 0)
-  if (framesSinceReport > 1 || polled.length > 0) {
-    console.log(`${framesSinceReport} frames/s from the emulator; pane polls/s: ${polled.map(([k, v]) => `${k}=${v}`).join(' ') || 'none'}`)
+  if (framesSinceReport > 0 || polled.length > 0) {
+    console.log(`emulator ${perSecond(framesSinceReport)} frames/s; pane requests/s: ${polled.map(([k, v]) => `${k}=${perSecond(v)}`).join(' ') || 'none'}`)
   }
   framesSinceReport = 0
   for (const key of Object.keys(polls)) polls[key] = 0
-}, 1000)
+}, RATE_REPORT_MS)
 
 function paneJpeg(frame) {
   if (frame.jpeg) return frame.jpeg
@@ -176,10 +203,10 @@ async function gesture(points) {
 
 async function handle(message) {
   if (message.type === 'debug') {
-    console.log(`pane debug: ${JSON.stringify(message)}`)
+    logEvent(`pane debug: ${JSON.stringify(message)}`)
     return
   }
-  console.log(`input: ${message.type}${message.key ? ` ${message.key}` : ''}${message.points ? ` ${message.points.length} points from ${JSON.stringify(message.points[0])} to ${JSON.stringify(message.points[message.points.length - 1])}` : ''}`)
+  logEvent(`input: ${message.type}${message.key ? ` ${message.key}` : ''}${message.points ? ` ${message.points.length} points from ${JSON.stringify(message.points[0])} to ${JSON.stringify(message.points[message.points.length - 1])}` : ''}`)
   if (message.type === 'touch') return touch(message, message.phase !== 'up')
   if (message.type === 'gesture') return gesture(message.points ?? [])
   if (message.type === 'key') return call('sendKey', { eventType: 'keypress', key: message.key })
@@ -200,7 +227,7 @@ const server = http.createServer(async (request, response) => {
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       response.end(fs.readFileSync(path.join(HERE, 'public/index.html')))
     } else if (request.method === 'GET' && url.pathname === '/stream.mjpeg') {
-      console.log(`mjpeg stream opened: v=${url.searchParams.get('v')} ua=${request.headers['user-agent']}`)
+      logEvent(`mjpeg stream opened: v=${url.searchParams.get('v')} ua=${request.headers['user-agent']}`)
       response.writeHead(200, {
         'content-type': `multipart/x-mixed-replace; boundary=${BOUNDARY}`,
         'cache-control': 'no-store',
@@ -211,15 +238,16 @@ const server = http.createServer(async (request, response) => {
       if (latest !== null) pushMjpeg(latest)
       request.on('close', () => {
         mjpegClients.delete(response)
-        console.log(`mjpeg stream closed: v=${url.searchParams.get('v')}`)
+        logEvent(`mjpeg stream closed: v=${url.searchParams.get('v')}`)
       })
     } else if (request.method === 'GET' && url.pathname === '/frame.jpg') {
-      console.log(`jpeg requested: v=${url.searchParams.get('v')} ua=${request.headers['user-agent']}`)
+      logEvent(`jpeg requested: v=${url.searchParams.get('v')} ua=${request.headers['user-agent']}`)
       response.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'access-control-allow-origin': '*' })
       response.end(latest === null ? Buffer.alloc(0) : Buffer.from(paneJpeg(latest).base64, 'base64'))
     } else if (request.method === 'GET' && url.pathname === '/frame-file') {
       polls['frame-file'] += 1
       const after = Number(url.searchParams.get('after') ?? -1)
+      await nextFrameAfter(after, Number(url.searchParams.get('wait') ?? 0))
       response.writeHead(200, { 'content-type': 'application/json' })
       if (latest === null || latest.seq === after) {
         response.end(JSON.stringify({ seq: latest?.seq ?? -1 }))
@@ -229,6 +257,7 @@ const server = http.createServer(async (request, response) => {
     } else if (request.method === 'GET' && url.pathname === '/frame') {
       polls.frame += 1
       const after = Number(url.searchParams.get('after') ?? -1)
+      await nextFrameAfter(after, Number(url.searchParams.get('wait') ?? 0))
       response.writeHead(200, { 'content-type': 'application/json' })
       if (latest === null || latest.seq === after) {
         response.end(JSON.stringify({ seq: latest?.seq ?? -1 }))
