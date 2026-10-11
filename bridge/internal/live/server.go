@@ -46,9 +46,15 @@ func (b *Bridge) Handler() http.Handler {
 		w.Header().Set("x-frame-options", "DENY")
 		w.Write(page)
 	})
-	routes.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+	routes.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), statusWaitTimeout)
+		defer cancel()
+		state := b.LookedState(ctx)
+		if r.URL.Query().Get("wait") == "booted" {
+			state = b.WaitBooted(ctx)
+		}
 		w.Header().Set("content-type", "application/json")
-		json.NewEncoder(w).Encode(b.State())
+		json.NewEncoder(w).Encode(state)
 	})
 	routes.HandleFunc("POST /input", b.serveInput)
 	routes.HandleFunc("GET /live", b.serveLive)
@@ -62,6 +68,32 @@ func (b *Bridge) Handler() http.Handler {
 	routes.HandleFunc("POST /recording/start", serveAction(sdkTimeout, answeringNothing(b.StartRecording)))
 	routes.HandleFunc("POST /recording/stop", serveAction(recordingStopTimeout, answeringPath(b.StopRecording)))
 	routes.HandleFunc("POST /app-settings", serveAction(sdkTimeout, answeringNothing(b.OpenAppSettings)))
+	routes.HandleFunc("GET /screen", serveRead(inputTimeout, b.Screen))
+	routes.HandleFunc("POST /gesture", serveAction(maxGestureTime+gestureRouteMargin, func(ctx context.Context, gesture Gesture) (any, error) {
+		return nil, b.Gesture(ctx, gesture)
+	}))
+	routes.HandleFunc("POST /open-url", serveAction(sdkTimeout, func(ctx context.Context, request struct {
+		URL string `json:"url"`
+	}) (any, error) {
+		return nil, b.OpenURL(ctx, request.URL)
+	}))
+	routes.HandleFunc("POST /launch", serveAction(launchAppTimeout, func(ctx context.Context, request LaunchRequest) (any, error) {
+		name, err := b.LaunchApp(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"package": name}, nil
+	}))
+	routes.HandleFunc("POST /logs", serveAction(sdkTimeout, func(ctx context.Context, request struct {
+		Package string `json:"package"`
+		Lines   int    `json:"lines"`
+	}) (any, error) {
+		log, err := b.Logs(ctx, request.Package, request.Lines)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"log": log}, nil
+	}))
 	routes.HandleFunc("GET /settings", serveRead(sdkTimeout, b.ReadSettings))
 	routes.HandleFunc("GET /settings/locales", serveRead(sdkTimeout, func(ctx context.Context) (any, error) {
 		locales, err := b.DeviceLocales(ctx)
@@ -270,7 +302,8 @@ func controlErrorStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, ErrNoEmulator), errors.Is(err, ErrNoADB):
 		return http.StatusServiceUnavailable
-	case errors.Is(err, ErrRecording), errors.Is(err, ErrNotRecording), errors.Is(err, ErrHomeInFront):
+	case errors.Is(err, ErrRecording), errors.Is(err, ErrNotRecording), errors.Is(err, ErrHomeInFront),
+		errors.Is(err, ErrNotRunning), errors.Is(err, ErrNoLauncherActivity):
 		return http.StatusConflict
 	case errors.Is(err, ErrLocaleUnavailable):
 		return http.StatusNotImplemented

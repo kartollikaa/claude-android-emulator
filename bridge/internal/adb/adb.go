@@ -18,6 +18,7 @@ type Device struct {
 var (
 	resumedActivity = regexp.MustCompile(`(?:topResumedActivity|mResumedActivity)[=:] ?ActivityRecord\{\S+ \S+ ([^/\s]+)/`)
 	packageName     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$`)
+	activityName    = regexp.MustCompile(`^[A-Za-z0-9_.$]+$`)
 )
 
 // Command builds an adb command for the device without running it.
@@ -38,6 +39,11 @@ func (d Device) Run(ctx context.Context, args ...string) (string, error) {
 	return string(output), nil
 }
 
+// Quote makes s one word for the device's shell, which parses the line adb shell joins from its arguments.
+func Quote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // ForegroundPackage picks the package of the resumed activity from `dumpsys activity activities`.
 func ForegroundPackage(activities string) string {
 	match := resumedActivity.FindStringSubmatch(activities)
@@ -50,11 +56,21 @@ func ForegroundPackage(activities string) string {
 
 // ResolvedPackage picks the package from `cmd package resolve-activity --brief`, whose last line is package/activity.
 func ResolvedPackage(resolved string) string {
+	name, _, _ := strings.Cut(ResolvedComponent(resolved), "/")
+	return name
+}
+
+// ResolvedComponent picks package/activity from `cmd package resolve-activity --brief`, or "" when nothing resolved.
+func ResolvedComponent(resolved string) string {
 	lines := strings.Split(strings.TrimSpace(resolved), "\n")
-	name, _, isComponent := strings.Cut(strings.TrimSpace(lines[len(lines)-1]), "/")
-	if !isComponent || !packageName.MatchString(name) {
+	component := strings.TrimSpace(lines[len(lines)-1])
+	name, activity, isComponent := strings.Cut(component, "/")
+	if !isComponent || !packageName.MatchString(name) || !activityName.MatchString(activity) {
 		return ""
 	}
 
-	return name
+	return component
 }
+
+// IsPackageName reports whether name is an Android application id.
+func IsPackageName(name string) bool { return packageName.MatchString(name) }

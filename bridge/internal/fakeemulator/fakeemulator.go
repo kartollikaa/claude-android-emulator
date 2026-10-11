@@ -45,6 +45,7 @@ type Fake struct {
 	turns    int
 	readTime time.Duration
 	asked    []*pb.ImageFormat
+	shots    []*pb.ImageFormat
 	vmStates []pb.VmRunState_RunState
 	touches  []*pb.Touch
 	keys     []*pb.KeyboardEvent
@@ -196,10 +197,27 @@ func (f *Fake) GetStatus(context.Context, *emptypb.Empty) (*pb.EmulatorStatus, e
 	}, nil
 }
 
-func (f *Fake) GetScreenshot(context.Context, *pb.ImageFormat) (*pb.Image, error) {
+// Screenshots returns the formats getScreenshot was asked for.
+func (f *Fake) Screenshots() []*pb.ImageFormat {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*pb.ImageFormat(nil), f.shots...)
+}
+
+// GetScreenshot answers PNG with the PNG bytes, and RGB888 with a pattern frame at the size asked for.
+func (f *Fake) GetScreenshot(_ context.Context, format *pb.ImageFormat) (*pb.Image, error) {
+	f.mu.Lock()
+	f.shots = append(f.shots, format)
+	f.mu.Unlock()
 	width, height := f.Width, f.Height
 	if f.Rotated {
 		width, height = height, width
+	}
+	if format.GetFormat() == pb.ImageFormat_RGB888 {
+		if format.GetWidth() > 0 && format.GetHeight() > 0 {
+			width, height = int(format.GetWidth()), int(format.GetHeight())
+		}
+		return Frame(0, width, height, 0x40), nil
 	}
 	return &pb.Image{Format: &pb.ImageFormat{Format: pb.ImageFormat_PNG, Width: uint32(width), Height: uint32(height)}, Image: f.PNG}, nil
 }

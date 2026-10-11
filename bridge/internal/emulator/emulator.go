@@ -234,6 +234,32 @@ func (c *Conn) Screenshot(ctx context.Context) ([]byte, error) {
 	return image.GetImage(), nil
 }
 
+// ScreenshotAt returns the screen upright as RGB888 pixels the emulator scaled to fit size.
+func (c *Conn) ScreenshotAt(ctx context.Context, size Size) (Frame, error) {
+	image, err := c.client.GetScreenshot(ctx, &pb.ImageFormat{Format: pb.ImageFormat_RGB888, Width: uint32(size.Width), Height: uint32(size.Height)})
+	if err != nil {
+		return Frame{}, err
+	}
+	width, height := int(image.GetFormat().GetWidth()), int(image.GetFormat().GetHeight())
+	if width <= 0 || height <= 0 || len(image.GetImage()) != width*height*3 {
+		return Frame{}, fmt.Errorf("the emulator answered a %d×%d screenshot of %d bytes, not RGB888", width, height, len(image.GetImage()))
+	}
+
+	return Frame{Seq: image.GetSeq(), Width: width, Height: height, Rotation: c.Rotation(), RGB: image.GetImage()}, nil
+}
+
+// Upright is the screen's size as the newest frame shows it: the panel, turned with the device.
+func (c *Conn) Upright() Size {
+	if Rotation(c.rotation.Load())&1 == 1 {
+		return Size{Width: c.Device.Height, Height: c.Device.Width}
+	}
+
+	return c.Device
+}
+
+// Rotation is the device's rotation as the newest frame shows it.
+func (c *Conn) Rotation() Rotation { return Rotation(c.rotation.Load()) }
+
 // Key presses and releases a named key (GoHome, GoBack, AppSwitch, Enter, Backspace, ...).
 func (c *Conn) Key(ctx context.Context, key string) error {
 	_, err := c.client.SendKey(ctx, &pb.KeyboardEvent{EventType: pb.KeyboardEvent_keypress, Key: key})
