@@ -14,6 +14,22 @@ export type Frame = {
   generation: number
 }
 
+export type LiveFrame = {
+  seq: number
+  width: number
+  height: number
+  base64: string
+}
+
+export type FileFrame = {
+  seq: number
+  width: number
+  height: number
+  path: string
+}
+
+export type LiveMode = 'svg' | 'file'
+
 declare module 'claude-code' {
   interface PluginState {
     'android-emulator': {
@@ -22,6 +38,13 @@ declare module 'claude-code' {
       frame: Frame | null
       problem: string | null
       isBusy: boolean
+      isLive: boolean
+      liveFrame: LiveFrame | null
+      liveRate: number
+      liveMode: LiveMode
+      liveFile: FileFrame | null
+      isProbing: boolean
+      touchStatus: string | null
     }
   }
 }

@@ -1,0 +1,13 @@
+{
+  "name": "live-helper-prototype",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway JS helper: emulator gRPC frames to a live page and to the mod pane",
+  "scripts": { "start": "node server.mjs" },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.0",
+    "@grpc/proto-loader": "^0.7.13",
+    "jpeg-js": "^0.4.4",
+    "ws": "^8.18.0"
+  }
+}
