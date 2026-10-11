@@ -43,6 +43,7 @@ const liveRate = atom({ plugin: 'android-emulator', key: 'liveRate' } as const, 
 const liveMode = atom({ plugin: 'android-emulator', key: 'liveMode' } as const, 'svg')
 const liveFile = atom({ plugin: 'android-emulator', key: 'liveFile' } as const, null)
 const isProbing = atom({ plugin: 'android-emulator', key: 'isProbing' } as const, false)
+const touchStatus = atom({ plugin: 'android-emulator', key: 'touchStatus' } as const, null)
 
 let poller: Timer | null = null
 let isFetching = false
@@ -265,11 +266,26 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('ui.message', async ($, e) => {
-    const data = e.data as { type?: unknown; points?: unknown } | null
-    if (e.requestId === PANE && data?.type === 'gesture' && Array.isArray(data.points)) {
-      await sendInput($, { type: 'gesture', points: data.points }).catch(error =>
-        update($, problem, () => (error instanceof Error ? error.message : String(error))),
-      )
+    if (e.requestId !== PANE) return {}
+    const data = (e.data ?? {}) as Record<string, unknown>
+    try {
+      if (data.type === 'overlay') {
+        await update($, touchStatus, () => `Touch: ready, overlay ${data.columns}x${data.rows} cells`)
+        await sendInput($, { ...data, type: 'debug', kind: data.type, surface: e.surface })
+      } else if (data.type === 'pointer') {
+        const hasSize = Number(data.columns) > 0 && Number(data.rows) > 0
+        const at = `${Number(data.x).toFixed(2)}, ${Number(data.y).toFixed(2)}`
+        await update($, touchStatus, () =>
+          hasSize ? `Touch: down at ${at}` : 'Touch: the overlay has no size on this surface',
+        )
+        await sendInput($, { ...data, type: 'debug', kind: data.type, surface: e.surface })
+      } else if (data.type === 'gesture' && Array.isArray(data.points)) {
+        await update($, touchStatus, () => `Touch: sent a gesture of ${(data.points as unknown[]).length} points`)
+        await sendInput($, { type: 'gesture', points: data.points })
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      await update($, touchStatus, () => `Touch: could not reach the helper (${reason})`)
     }
 
     return {}
@@ -279,6 +295,10 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: 'Android' })
     await refresh($)
     const count = (await read($, devices)).length
+    if (count > 0 && !(await read($, isLive))) {
+      const surfaces = await $.session.surfaces()
+      await startLive($, surfaces[0] === 'terminal' ? 'file' : 'svg')
+    }
 
     return { text: `Android pane opened: ${count} device${count === 1 ? '' : 's'} attached.` }
   }).catch(() => ({ text: 'android-emulator: could not open the Android pane.' }))
@@ -295,6 +315,7 @@ export const register: Register = on => {
     const rate = await read($, liveRate)
     const liveTerminal = await read($, liveFile)
     const probing = await read($, isProbing)
+    const touch = await read($, touchStatus)
 
     let screen = null
     if (live && liveTerminal !== null && e.surface === 'terminal') {
@@ -441,6 +462,7 @@ export const register: Register = on => {
             ))}
           </Box>
         )}
+        {live && <Text dimColor>{touch ?? 'Touch: waiting for the overlay to report its size'}</Text>}
         {error !== null && <Text color="error">{error}</Text>}
         {list.length === 0 && (
           <Text dimColor>No devices attached. Start one (emulator -avd NAME), then press Refresh.</Text>

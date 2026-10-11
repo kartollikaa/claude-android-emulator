@@ -44,6 +44,7 @@ declare module 'claude-code' {
       liveMode: LiveMode
       liveFile: FileFrame | null
       isProbing: boolean
+      touchStatus: string | null
     }
   }
 }

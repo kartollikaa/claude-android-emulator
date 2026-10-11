@@ -63,6 +63,7 @@ console.log(`emulator ${emulator.serial} on grpc :${emulator.port}, screen ${dev
 
 let latest = null
 let framesSinceReport = 0
+const polls = { frame: 0, 'frame-file': 0 }
 const sockets = new Set()
 const mjpegClients = new Set()
 const BOUNDARY = 'androidframe'
@@ -92,8 +93,12 @@ function startStream() {
 }
 startStream()
 setInterval(() => {
-  if (framesSinceReport > 0) console.log(`${framesSinceReport} frames/s from the emulator`)
+  const polled = Object.entries(polls).filter(([, count]) => count > 0)
+  if (framesSinceReport > 1 || polled.length > 0) {
+    console.log(`${framesSinceReport} frames/s from the emulator; pane polls/s: ${polled.map(([k, v]) => `${k}=${v}`).join(' ') || 'none'}`)
+  }
   framesSinceReport = 0
+  for (const key of Object.keys(polls)) polls[key] = 0
 }, 1000)
 
 function paneJpeg(frame) {
@@ -170,6 +175,11 @@ async function gesture(points) {
 }
 
 async function handle(message) {
+  if (message.type === 'debug') {
+    console.log(`pane debug: ${JSON.stringify(message)}`)
+    return
+  }
+  console.log(`input: ${message.type}${message.key ? ` ${message.key}` : ''}${message.points ? ` ${message.points.length} points from ${JSON.stringify(message.points[0])} to ${JSON.stringify(message.points[message.points.length - 1])}` : ''}`)
   if (message.type === 'touch') return touch(message, message.phase !== 'up')
   if (message.type === 'gesture') return gesture(message.points ?? [])
   if (message.type === 'key') return call('sendKey', { eventType: 'keypress', key: message.key })
@@ -208,6 +218,7 @@ const server = http.createServer(async (request, response) => {
       response.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'access-control-allow-origin': '*' })
       response.end(latest === null ? Buffer.alloc(0) : Buffer.from(paneJpeg(latest).base64, 'base64'))
     } else if (request.method === 'GET' && url.pathname === '/frame-file') {
+      polls['frame-file'] += 1
       const after = Number(url.searchParams.get('after') ?? -1)
       response.writeHead(200, { 'content-type': 'application/json' })
       if (latest === null || latest.seq === after) {
@@ -216,6 +227,7 @@ const server = http.createServer(async (request, response) => {
         response.end(JSON.stringify({ seq: latest.seq, width: latest.width, height: latest.height, path: frameFile(latest) }))
       }
     } else if (request.method === 'GET' && url.pathname === '/frame') {
+      polls.frame += 1
       const after = Number(url.searchParams.get('after') ?? -1)
       response.writeHead(200, { 'content-type': 'application/json' })
       if (latest === null || latest.seq === after) {

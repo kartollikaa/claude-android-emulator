@@ -61,7 +61,7 @@ describe('live mode on desktop', () => {
     await ui.unmount()
   })
 
-  test('a drag on the overlay reaches the helper as one gesture', async ($, on) => {
+  test('a press on an overlay with no size says so instead of tapping a corner', async ($, on) => {
     mock.clock(on)
     const posted: unknown[] = []
     fakeHelper(on, posted)
@@ -69,15 +69,29 @@ describe('live mode on desktop', () => {
     await ui.press({ key: 'live' })
 
     await ui.pointer({ in: 'touch', type: 'down', x: 2, y: 10, button: 'left' })
-    await ui.pointer({ in: 'touch', type: 'move', x: 2, y: 5, button: 'left' })
-    await ui.pointer({ in: 'touch', type: 'up', x: 2, y: 1, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'up', x: 2, y: 10, button: 'left' })
 
-    expect(posted).toEqual([
-      expect.objectContaining({
-        type: 'gesture',
-        points: expect.arrayContaining([expect.objectContaining({ t: expect.any(Number) })]),
-      }),
-    ])
+    expect(posted).toEqual([expect.objectContaining({ type: 'debug', kind: 'pointer', columns: 0 })])
+    expect(await ui.find({ type: 'Text', text: /overlay has no size/ })).toBeDefined()
+    await ui.press({ key: 'live' })
+    await ui.unmount()
+  })
+
+  test('a drag on the laid-out overlay reaches the helper as one gesture', async ($, on) => {
+    mock.clock(on)
+    const posted: Array<Record<string, unknown>> = []
+    fakeHelper(on, posted)
+    const ui = await $.ui.mount(PANE)
+    await ui.press({ key: 'live' })
+    await ui.resize({ in: 'touch', columns: 30, rows: 60 })
+
+    await ui.pointer({ in: 'touch', type: 'down', x: 15, y: 50, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'move', x: 15, y: 30, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'up', x: 15, y: 10, button: 'left' })
+
+    expect(posted.map(message => message.type)).toEqual(['debug', 'gesture'])
+    const gesture = posted[1] as { points: Array<{ x: number; y: number }> }
+    expect(gesture.points[0]).toEqual(expect.objectContaining({ x: 15.5 / 30, y: 50.5 / 60 }))
     await ui.press({ key: 'live' })
     await ui.unmount()
   })
@@ -121,6 +135,27 @@ describe('live mode on the terminal', () => {
     expect(JSON.stringify(screen)).toContain('slot-1.rgb')
     expect(await ui.find({ type: 'Client', key: 'touch' })).toBeDefined()
     expect(await ui.find({ key: 'probe' })).toBeUndefined()
+    await ui.press({ key: 'live' })
+    await ui.unmount()
+  })
+
+  test('a drag on the overlay reaches the helper as one gesture in screen fractions', async ($, on) => {
+    mock.clock(on)
+    const posted: Array<Record<string, unknown>> = []
+    fakeHelper(on, posted)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'live' })
+    await ui.resize({ in: 'touch', columns: 36, rows: 40 })
+
+    await ui.pointer({ in: 'touch', type: 'down', x: 10, y: 30, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'move', x: 10, y: 15, button: 'left' })
+    await ui.pointer({ in: 'touch', type: 'up', x: 10, y: 2, button: 'left' })
+
+    const gesture = posted.find(message => message.type === 'gesture') as { points: Array<{ x: number; y: number }> }
+    expect(gesture.points).toHaveLength(3)
+    expect(gesture.points[0]!.y).toBeGreaterThan(gesture.points[2]!.y)
+    expect(gesture.points.every(point => point.x > 0 && point.x < 1 && point.y > 0 && point.y < 1)).toBe(true)
+    expect(await ui.find({ type: 'Text', text: /Touch: sent a gesture of 3 points/ })).toBeDefined()
     await ui.press({ key: 'live' })
     await ui.unmount()
   })
