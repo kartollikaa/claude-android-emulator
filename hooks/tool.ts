@@ -8,8 +8,8 @@ declare module 'claude-code' {
   }
 }
 
-// Each long-poll of the bridge's boot wait is shorter than this; a boot gets this many of them.
-const BOOT_POLLS = 12
+// start gives up after this many of the bridge's boot long-polls.
+const BOOT_WAITS = 12
 
 const BUTTON_KEYS: Record<string, string> = {
   home: 'GoHome',
@@ -55,7 +55,7 @@ export const toolSpec: ToolSpec = {
       font_scale: { type: 'number', description: 'settings: 1 is the default' },
       density: { type: 'integer', description: 'settings: display density in dpi; 0 returns to the physical density' },
       locale: { type: 'string', description: 'settings: a BCP 47 language tag such as en-US' },
-      reset: { type: 'boolean', description: 'settings: light theme, default font and display size; the language stays' },
+      reset: { type: 'boolean', description: 'settings: light theme, default font and display size first, then any change named beside it; the language stays' },
       direction: { type: 'string', enum: ['left', 'right'], description: 'rotate: counter-clockwise (left) or clockwise' },
     },
     required: ['action'],
@@ -109,7 +109,12 @@ async function answer<T>(call: Call, method: 'GET' | 'POST', path: string, body?
   const reply = await call(method, path, body)
   if (!reply.ok) refuseReply(reply)
 
-  return (reply.text.trim() === '' ? undefined : JSON.parse(reply.text)) as T
+  if (reply.text.trim() === '') return undefined as T
+  try {
+    return JSON.parse(reply.text) as T
+  } catch {
+    return refuse(`The bridge answered ${method} ${path} with something that is not JSON: ${reply.text.slice(0, 200)}`)
+  }
 }
 
 // runAction carries out one call of the tool against the bridge.
@@ -182,9 +187,9 @@ async function settings(call: Call, input: Input): Promise<Outcome> {
     locale: input.locale,
   }
   const isChange = Object.values(change).some(value => value !== undefined)
-  const current = input.reset === true
-    ? await answer(call, 'POST', '/settings/reset', {})
-    : isChange ? await answer(call, 'POST', '/settings', change) : await answer(call, 'GET', '/settings')
+  let current = input.reset === true ? await answer(call, 'POST', '/settings/reset', {}) : undefined
+  if (isChange) current = await answer(call, 'POST', '/settings', change)
+  current ??= await answer(call, 'GET', '/settings')
 
   return said(`Device settings: ${JSON.stringify(current)}`)
 }
@@ -193,6 +198,9 @@ const isUnderWay = (state: State) => state.connected || state.launch?.phase === 
 
 async function start(call: Call, avd: string | undefined): Promise<Outcome> {
   let state = await answer<State>(call, 'GET', '/status')
+  if (state.booted && avd !== undefined && state.avd !== '' && state.avd !== avd) {
+    refuse(`${state.avd} is running, not ${avd}; shut it down from the live view first.`)
+  }
   if (state.booted) return said(`${state.avd || 'An emulator'} is already running.`)
   if (!isUnderWay(state)) {
     const { avds } = await answer<{ avds: { name: string; running: boolean }[] }>(call, 'GET', '/avds')
@@ -202,7 +210,7 @@ async function start(call: Call, avd: string | undefined): Promise<Outcome> {
     // A refusal can be an emulator the bridge attached to since the status above: wait for that one.
     if (!started.ok && !isUnderWay(await answer<State>(call, 'GET', '/status'))) refuseReply(started)
   }
-  for (let poll = 0; poll < BOOT_POLLS; poll++) {
+  for (let poll = 0; poll < BOOT_WAITS; poll++) {
     state = await answer<State>(call, 'GET', '/status?wait=booted')
     if (state.booted) return said(`${state.avd} has booted.`)
     if (state.launch?.phase === 'failed') refuse(state.launch.error ?? `${state.launch.avd} did not start.`)

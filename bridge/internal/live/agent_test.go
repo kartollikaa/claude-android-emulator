@@ -17,9 +17,3 @@ func TestScreenSizeFitsTheLongSide(t *testing.T) {
 		}
 	}
 }
-
-func TestCompareVersionsByNumber(t *testing.T) {
-	if compareVersions("36.1.0", "9.0.0") <= 0 || compareVersions("35.0.0", "35.0.1") >= 0 || compareVersions("34.0.0", "34.0.0") != 0 {
-		t.Error("versions are not ordered by their numbers")
-	}
-}

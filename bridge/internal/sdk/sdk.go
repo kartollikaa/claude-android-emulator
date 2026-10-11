@@ -102,6 +102,40 @@ func (s SDK) ADB() string {
 	return filepath.Join(s.Root, "platform-tools", "adb")
 }
 
+// AAPT2 is the path of aapt2 in the SDK's newest build-tools, or "" when it has none.
+func (s SDK) AAPT2() string {
+	name := "aapt2"
+	if s.goos == "windows" {
+		name = "aapt2.exe"
+	}
+	tools, _ := filepath.Glob(filepath.Join(s.Root, "build-tools", "*", name))
+	if len(tools) == 0 {
+		return ""
+	}
+
+	return slices.MaxFunc(tools, func(a, b string) int {
+		return compareVersions(filepath.Base(filepath.Dir(a)), filepath.Base(filepath.Dir(b)))
+	})
+}
+
+// compareVersions orders dotted version numbers by their numbers, 36.1.0 after 9.0.0.
+func compareVersions(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := range max(len(as), len(bs)) {
+		var x, y int
+		if i < len(as) {
+			x, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			y, _ = strconv.Atoi(bs[i])
+		}
+		if x != y {
+			return x - y
+		}
+	}
+	return 0
+}
+
 // AVDHome is where AVDs keep their .ini files.
 func AVDHome(getenv func(string) string, home string) string {
 	if dir := getenv("ANDROID_AVD_HOME"); dir != "" {

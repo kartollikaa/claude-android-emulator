@@ -136,11 +136,14 @@ test('settings are read, changed or reset by what the call names', async () => {
   const read = await runAction(call, { action: 'settings' })
   const changed = await runAction(call, { action: 'settings', dark_theme: true, density: 0 })
   await runAction(call, { action: 'settings', reset: true })
+  await runAction(call, { action: 'settings', reset: true, locale: 'en-US' })
 
   expect(requests).toEqual([
     { method: 'GET', path: '/settings' },
     { method: 'POST', path: '/settings', body: { darkTheme: true, density: 0 } },
     { method: 'POST', path: '/settings/reset', body: {} },
+    { method: 'POST', path: '/settings/reset', body: {} },
+    { method: 'POST', path: '/settings', body: { locale: 'en-US' } },
   ])
   expect(read).toEqual({ blocks: [{ type: 'text', text: 'Device settings: {"darkTheme":false}' }] })
   expect(changed).toEqual({ blocks: [{ type: 'text', text: 'Device settings: {"darkTheme":true}' }] })
@@ -159,6 +162,14 @@ test("the bridge's refusal reaches the model, and no emulator points at start", 
   })
   expect(await runAction(call, { action: 'rotate', direction: 'right' })).toEqual({ error: 'the bridge answered 500' })
   expect(await runAction(call, { action: 'fly' })).toEqual({ error: expect.stringMatching(/^action is one of start, /) })
+})
+
+test('an answer that is not JSON is named as such', async () => {
+  const { call } = bridge({ 'GET /screen': { text: '<html>' } })
+
+  expect(await runAction(call, { action: 'screenshot' })).toEqual({
+    error: 'The bridge answered GET /screen with something that is not JSON: <html>',
+  })
 })
 
 test('a bridge that cannot be reached is named', async () => {
@@ -212,7 +223,11 @@ test('start leaves a running emulator alone and joins a boot already under way',
   expect(await runAction(running.call, { action: 'start' })).toEqual({ blocks: [{ type: 'text', text: 'Pixel_9 is already running.' }] })
   await runAction(booting.call, { action: 'start' })
 
-  expect(running.requests.length).toBe(1)
+  expect(await runAction(running.call, { action: 'start', avd: 'Tablet' })).toEqual({
+    error: 'Pixel_9 is running, not Tablet; shut it down from the live view first.',
+  })
+  expect(await runAction(running.call, { action: 'start', avd: 'Pixel_9' })).toEqual({ blocks: [{ type: 'text', text: 'Pixel_9 is already running.' }] })
+  expect(running.requests.length).toBe(3)
   expect(booting.requests.map(request => request.path)).toEqual(['/status', '/status?wait=booted'])
 })
 

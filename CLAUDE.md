@@ -34,6 +34,8 @@ and Use, the page) describes only that flow; commands belong under the README's 
   (`{ type: 'image', source: { type: 'base64', media_type, data } }`), never MCP's `{ data, mimeType }`.
 - A `tool.call` matcher names the tool as a literal, or the validator cannot tell which tool it serves;
   the tool's input type is merged into `McpToolInputs` in `hooks/tool.ts` so the matcher type-checks.
+- `$.http.fetch` aborts a request that has no complete answer within its own limit (see the spike
+  log): a bridge route the mod long-polls answers before it.
 - To see what a headless session sends the model, point `ANTHROPIC_BASE_URL` at a local fake Messages
   API that scripts the tool calls and logs the request bodies; real headless turns need a login.
 - The validator follows `$` only into functions declared in the hooks module itself: every function

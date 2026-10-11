@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,12 +28,13 @@ const (
 	screenLongSide = 1280
 	screenQuality  = 85
 	// A swipe moves the finger at about the display's frame rate.
-	swipeStep          = 16 * time.Millisecond
-	defaultTapTime     = 50 * time.Millisecond
-	defaultSwipeTime   = 300 * time.Millisecond
-	maxGestureTime     = 10 * time.Second
-	defaultLogLines    = 200
-	maxLogLines        = 2000
+	swipeStep        = 16 * time.Millisecond
+	defaultTapTime   = 50 * time.Millisecond
+	defaultSwipeTime = 300 * time.Millisecond
+	maxGestureTime   = 10 * time.Second
+	defaultLogLines  = 200
+	maxLogLines      = 2000
+	// Under $.http.fetch's own abort, so the mod's long-poll always gets an answer.
 	statusWaitTimeout  = 25 * time.Second
 	launchAppTimeout   = 2 * time.Minute
 	gestureRouteMargin = 5 * time.Second
@@ -150,7 +150,10 @@ func (b *Bridge) Gesture(ctx context.Context, gesture Gesture) error {
 	if err := at(ctx, startX, startY, true); err != nil {
 		return err
 	}
-	steps := max(1, int(held/swipeStep))
+	steps := 1
+	if isSwipe {
+		steps = max(1, int(held/swipeStep))
+	}
 	for step := 1; step <= steps; step++ {
 		if err := sleepCtx(ctx, held/time.Duration(steps)); err != nil {
 			lift()
@@ -234,14 +237,11 @@ func (b *Bridge) apkPackage(ctx context.Context, apk string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tools, _ := filepath.Glob(filepath.Join(found.Root, "build-tools", "*", executable("aapt2")))
-	slices.SortFunc(tools, func(a, b string) int {
-		return compareVersions(filepath.Base(filepath.Dir(a)), filepath.Base(filepath.Dir(b)))
-	})
-	if len(tools) == 0 {
+	aapt2 := found.AAPT2()
+	if aapt2 == "" {
 		return "", fmt.Errorf("%w: the SDK has no build-tools to read the APK's application id; name the package too", ErrBadInput)
 	}
-	output, err := exec.CommandContext(ctx, tools[len(tools)-1], "dump", "packagename", apk).Output()
+	output, err := exec.CommandContext(ctx, aapt2, "dump", "packagename", apk).Output()
 	name := strings.TrimSpace(string(output))
 	if err != nil || !adb.IsPackageName(name) {
 		return "", fmt.Errorf("%w: cannot read the application id of %s; name the package too", ErrBadInput, apk)
@@ -304,29 +304,4 @@ func sleepCtx(ctx context.Context, wait time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func executable(name string) string {
-	if runtime.GOOS == "windows" {
-		return name + ".exe"
-	}
-	return name
-}
-
-// compareVersions orders dotted version numbers by their numbers, 36.1.0 after 9.0.0.
-func compareVersions(a, b string) int {
-	as, bs := strings.Split(a, "."), strings.Split(b, ".")
-	for i := range max(len(as), len(bs)) {
-		var x, y int
-		if i < len(as) {
-			x, _ = strconv.Atoi(as[i])
-		}
-		if i < len(bs) {
-			y, _ = strconv.Atoi(bs[i])
-		}
-		if x != y {
-			return x - y
-		}
-	}
-	return 0
 }
