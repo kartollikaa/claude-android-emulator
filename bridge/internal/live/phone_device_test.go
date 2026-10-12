@@ -391,6 +391,17 @@ func TestPhoneInputGoesToTheControlSocket(t *testing.T) {
 	}
 }
 
+func TestAPageThatSkipsAsksThePhoneForAKeyFrame(t *testing.T) {
+	p := phoneBridge(t, phoneUSB)
+	p.streaming(t)
+
+	before := len(p.scrcpy.received())
+	if code := postInput(t, p.harness, "application/json", `{"type":"keyframe"}`); code != http.StatusNoContent {
+		t.Fatalf("keyframe answered %d", code)
+	}
+	p.scrcpy.awaitControl(t, before, scrcpy.ResetVideoMessage())
+}
+
 func TestPhoneRotationSetsTheLockedRotation(t *testing.T) {
 	p := phoneBridge(t, phoneUSB)
 	p.streaming(t)

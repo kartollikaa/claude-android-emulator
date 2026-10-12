@@ -17,7 +17,6 @@
     --accent: #c96442;
     --accent-fg: #ffffff;
     --error: #b3261e;
-    --bezel-width: 8px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -41,7 +40,7 @@
   .device { position: relative; flex: 1; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; }
   canvas {
     box-sizing: content-box; width: 0; height: 0;
-    border: var(--bezel-width) solid var(--bezel); border-radius: 28px; background: var(--bezel);
+    border: 0 solid var(--bezel); background: var(--bezel);
     touch-action: none; cursor: default; outline: none;
   }
   canvas:focus-visible { box-shadow: 0 0 0 3px var(--focus); }
@@ -594,9 +593,11 @@
     if (needsKeyFrame && !isKeyFrame) return
     if (!isKeyFrame && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
       needsKeyFrame = true
+      askForKeyFrame()
       return
     }
     needsKeyFrame = false
+    keyFrameAsked = false
     let bytes = data
     if (isKeyFrame) {
       bytes = new Uint8Array(config.length + data.length)
@@ -605,6 +606,14 @@
     }
     chunkTime += 16667
     decoder.decode(new EncodedVideoChunk({ type: isKeyFrame ? 'key' : 'delta', timestamp: chunkTime, data: bytes }))
+  }
+
+  // scrcpy sends a key frame only every few seconds and only while the screen changes, so a skip asks for one at once.
+  let keyFrameAsked = false
+  function askForKeyFrame() {
+    if (keyFrameAsked) return
+    keyFrameAsked = true
+    send({ type: 'keyframe' })
   }
 
   function drawVideoFrame(frame) {
@@ -636,12 +645,21 @@
 
   // Scale the screen to the side that runs out first, so a resize never changes its proportions.
   const device = document.querySelector('.device')
+  // The bezel and its corners grow and shrink with the screen, so a small screen keeps a phone's proportions.
+  const BEZEL = 0.02
+  const CORNER = 0.075
   function fit() {
-    const bezel = 2 * parseFloat(getComputedStyle(canvas).borderLeftWidth)
     const room = device.getBoundingClientRect()
-    const scale = Math.max(0, Math.min((room.width - bezel) / canvas.width, (room.height - bezel) / canvas.height))
+    const short = Math.min(canvas.width, canvas.height)
+    const scale = Math.max(0, Math.min(
+      room.width / (canvas.width + 2 * BEZEL * short),
+      room.height / (canvas.height + 2 * BEZEL * short),
+    ))
+    const side = short * scale
     canvas.style.width = `${Math.floor(canvas.width * scale)}px`
     canvas.style.height = `${Math.floor(canvas.height * scale)}px`
+    canvas.style.borderWidth = `${Math.max(2, Math.round(BEZEL * side))}px`
+    canvas.style.borderRadius = `${Math.round(CORNER * side)}px`
   }
   new ResizeObserver(fit).observe(device)
 
