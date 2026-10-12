@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -283,5 +285,34 @@ func TestTheWatcherFollowsThePidTheDiscoveryFileNames(t *testing.T) {
 	stopEmulator()
 	if !watcher.check(context.Background(), t0) {
 		t.Error("the watch went on with the emulator the discovery file names gone")
+	}
+}
+
+func TestTheLockHasOneHolderWhileHoldersComeAndGo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watch.lock")
+	var holders, overlaps atomic.Int32
+	var contenders sync.WaitGroup
+	for range 4 {
+		contenders.Add(1)
+		go func() {
+			defer contenders.Done()
+			for range 2000 {
+				release, err := Lock(path)
+				if err != nil {
+					continue
+				}
+				if holders.Add(1) > 1 {
+					overlaps.Add(1)
+				}
+				time.Sleep(20 * time.Microsecond)
+				holders.Add(-1)
+				release()
+			}
+		}()
+	}
+	contenders.Wait()
+
+	if overlaps.Load() > 0 {
+		t.Errorf("two holders at once %d times", overlaps.Load())
 	}
 }
