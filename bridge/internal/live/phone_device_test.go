@@ -497,3 +497,19 @@ func TestPhoneWithoutVideoYet(t *testing.T) {
 		t.Errorf("a touch before the first config packet answered %d, want 502", code)
 	}
 }
+
+func TestAFailedLaunchOutlivesThePhoneReconnecting(t *testing.T) {
+	p := phoneBridge(t, phoneUSB)
+	video := p.streaming(t)
+
+	if status := start(t, p.harness, "Pixel_7"); status != http.StatusAccepted {
+		t.Fatalf("start answered %d, want 202", status)
+	}
+	p.waitFor(t, func(state State) bool { return state.Launch.Phase == launchFailed })
+	video.Close()
+	p.streaming(t)
+
+	if launch := p.status(t).Launch; launch.Phase != launchFailed || launch.AVD != "Pixel_7" {
+		t.Errorf("after the phone reconnected the launch is %+v, want Pixel_7's failure still shown", launch)
+	}
+}

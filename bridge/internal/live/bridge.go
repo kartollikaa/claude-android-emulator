@@ -211,7 +211,8 @@ func (b *Bridge) attach(conn device.Device) {
 		state.WiFi = isWireless && wireless.IsWiFi()
 	}
 	b.state = b.keepingCaptures(state)
-	if b.launch.Phase == launchFailed || conn.Kind() == device.Emulator && b.launch.AVD == conn.Name() {
+	// A phone attaching says nothing about a launch, which may still be starting or have failed beside it.
+	if conn.Kind() == device.Emulator && (b.launch.Phase == launchFailed || b.launch.AVD == conn.Name()) {
 		b.launch = Launch{}
 	}
 	b.mu.Unlock()
