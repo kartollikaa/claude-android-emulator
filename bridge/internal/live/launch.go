@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/proc"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
@@ -36,7 +37,7 @@ type AVD struct {
 var (
 	// ErrUnknownAVD is returned for a start of an AVD the SDK does not list.
 	ErrUnknownAVD = errors.New("the Android SDK has no such virtual device")
-	// ErrBusy is returned for a start while an emulator runs or another one is starting.
+	// ErrBusy is returned for a start while an emulator is connected or starting; a phone shown gives way to it.
 	ErrBusy = errors.New("cannot start another emulator")
 )
 
@@ -101,7 +102,7 @@ func (b *Bridge) Start(ctx context.Context, avd string) error {
 func (b *Bridge) reserveLaunch(avd string, isRunning bool) (uint64, error) {
 	b.mu.Lock()
 	switch {
-	case b.state.Connected:
+	case b.state.Connected && b.state.Kind == device.Emulator:
 		b.mu.Unlock()
 		return 0, fmt.Errorf("%w: an emulator is already running", ErrBusy)
 	case b.launch.Phase == launchStarting:

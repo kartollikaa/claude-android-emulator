@@ -23,8 +23,16 @@ import (
 //go:embed index.html
 var page []byte
 
+// A binary message opens with its kind, then width and height (u32, little-endian) and a third u32: the seq of an RGB
+// frame, the flags of an H.264 packet.
 const (
-	frameHeaderBytes = 12
+	frameRGB  = 0
+	frameH264 = 1
+	// packetIsConfig and packetIsKeyFrame are an H.264 packet's flags.
+	packetIsConfig   = 1
+	packetIsKeyFrame = 2
+
+	frameHeaderBytes = 13
 	inputTimeout     = 5 * time.Second
 	sdkTimeout       = 10 * time.Second
 	maxInputBytes    = 64 << 10
@@ -332,6 +340,8 @@ func inputErrorStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, ErrNoEmulator):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, device.ErrCannotShutDown):
+		return http.StatusConflict
 	}
 
 	return http.StatusBadGateway
@@ -374,13 +384,14 @@ func (b *Bridge) readInput(ctx context.Context, socket *websocket.Conn) {
 	}
 }
 
-// writeFrames sends a JSON state message whenever the state changes and a binary frame
-// (12-byte little-endian width, height, seq header, then RGB888 rows) whenever the frame does.
+// writeFrames sends a JSON state message whenever the state changes, an emulator's newest RGB888 frame whenever it
+// changes, and every packet of a phone's video in order from a point the page can decode from.
 func (b *Bridge) writeFrames(ctx context.Context, socket *websocket.Conn) error {
 	changes, stop := b.watch()
 	defer stop()
 	var sentState *State
 	var sentFrame *device.Frame
+	var cursor videoCursor
 	for {
 		select {
 		case <-ctx.Done():
@@ -400,6 +411,11 @@ func (b *Bridge) writeFrames(ctx context.Context, socket *websocket.Conn) error 
 			}
 			sentState = &connection
 		}
+		for _, packet := range b.followVideo(&cursor) {
+			if err := writeFrame(ctx, socket, packet); err != nil {
+				return err
+			}
+		}
 		if frame == nil || frame == sentFrame {
 			continue
 		}
@@ -416,15 +432,53 @@ func writeFrame(ctx context.Context, socket *websocket.Conn, frame *device.Frame
 		return err
 	}
 	header := make([]byte, frameHeaderBytes)
-	binary.LittleEndian.PutUint32(header[0:], uint32(frame.Width))
-	binary.LittleEndian.PutUint32(header[4:], uint32(frame.Height))
-	binary.LittleEndian.PutUint32(header[8:], frame.Seq)
+	binary.LittleEndian.PutUint32(header[1:], uint32(frame.Width))
+	binary.LittleEndian.PutUint32(header[5:], uint32(frame.Height))
+	body := frame.RGB
+	if packet := frame.Video; packet != nil {
+		header[0] = frameH264
+		flags := uint32(0)
+		if packet.IsConfig {
+			flags |= packetIsConfig
+		}
+		if packet.IsKeyFrame {
+			flags |= packetIsKeyFrame
+		}
+		binary.LittleEndian.PutUint32(header[9:], flags)
+		body = packet.Data
+	} else {
+		header[0] = frameRGB
+		binary.LittleEndian.PutUint32(header[9:], frame.Seq)
+	}
 	if _, err := writer.Write(header); err != nil {
 		return err
 	}
-	if _, err := writer.Write(frame.RGB); err != nil {
+	if _, err := writer.Write(body); err != nil {
 		return err
 	}
 
 	return writer.Close()
+}
+
+// followVideo answers the phone's packets this viewer sends next, asking the phone for a fresh key frame when it cannot start.
+func (b *Bridge) followVideo(cursor *videoCursor) []*device.Frame {
+	b.mu.Lock()
+	packets, needsReset := b.video.follow(cursor)
+	conn := b.conn
+	b.mu.Unlock()
+	if !needsReset {
+		return packets
+	}
+	resetter, ok := conn.(device.VideoResetter)
+	if !ok {
+		return nil
+	}
+	if err := resetter.ResetVideo(); err != nil {
+		b.config.Logger.Debug("cannot reset the video", "err", err)
+		b.mu.Lock()
+		b.video.isResetAsked = false
+		b.mu.Unlock()
+	}
+
+	return nil
 }

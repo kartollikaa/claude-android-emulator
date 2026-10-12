@@ -107,6 +107,14 @@
   .settings :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
   .note { margin: 0; max-width: 100%; color: var(--muted); overflow-wrap: anywhere; text-align: center; }
   .note.error { padding: 0; border: 0; color: var(--error); }
+  nav [hidden], .toolbar [hidden], .picker [hidden] { display: none !important; }
+  .picker .back {
+    align-self: flex-start; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--button); color: var(--fg); font: inherit; cursor: pointer;
+  }
+  .picker .back:hover { background: var(--button-hover); }
+  .picker .back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .hint { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--fg); }
   nav .power { margin-left: 16px; }
   nav .power.confirming { width: auto; padding: 0 12px; background: var(--error); border-color: var(--error); color: var(--bg); font: inherit; font-weight: 600; }
 </style>
@@ -126,6 +134,7 @@
       <button data-key="Power" aria-label="Power: turn the screen off or on" title="Power"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></svg></button>
     </div>
     <div class="group">
+      <button id="pick-avd" aria-label="Virtual devices: start an emulator instead of the phone" title="Virtual devices" hidden><svg viewBox="0 0 24 24"><rect x="5" y="3" width="10" height="16" rx="2"/><path d="M19 15v6M16 18h6"/></svg></button>
       <button id="settings" aria-label="Device settings" title="Device settings" aria-expanded="false" aria-controls="settings-panel"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
     </div>
   </div>
@@ -145,6 +154,9 @@
         <span id="progress-time"></span>
       </div>
       <div class="picker" id="picker" hidden>
+        <button class="back" id="back-to-phone" hidden></button>
+        <p class="hint" id="unauthorized" hidden>A phone is connected but has not allowed USB debugging yet: unlock it and allow USB debugging in the prompt it shows.</p>
+        <p class="error" id="phone-error" hidden></p>
         <p class="error" id="launch-error" hidden></p>
         <h1>Virtual devices</h1>
         <ul class="avds" id="avds"></ul>
@@ -183,11 +195,19 @@
         if (message.type === 'state') render(message)
         return
       }
-      draw(new DataView(data), new Uint8Array(data, 12))
+      const header = new DataView(data)
+      if (header.getUint8(0) === FRAME_H264) decodePacket(header, new Uint8Array(data, FRAME_HEADER))
+      else draw(header, new Uint8Array(data, FRAME_HEADER))
     }
   }
 
-  // Panels: the AVD list, start and boot progress, problems; the screen once the emulator has booted.
+  // Binary messages: a kind byte, then width, height and the seq of an RGB frame or the flags of an H.264 packet, each a u32.
+  const FRAME_H264 = 1
+  const FRAME_HEADER = 13
+  const IS_CONFIG = 1
+  const IS_KEY_FRAME = 2
+
+  // Panels: the AVD list, start and boot progress, problems; the screen once the device has booted.
   const panels = { progress: el('progress'), picker: el('picker'), problem: el('problem') }
   let shown = null
   let progressSince = 0
@@ -196,23 +216,42 @@
 
   function el(id) { return document.getElementById(id) }
 
+  // A phone shows unless the picker was opened over it to start an emulator, which then takes its place.
+  let pickingAVD = false
+
   function render(state) {
     lastState = state
     showRecording(state)
     if (state.saved && seenSaved !== undefined && state.saved !== seenSaved) note(`Saved ${state.saved}`)
     seenSaved = state.saved || ''
-    if (state.connected && state.booted) {
-      // The emulator may be another one now, with other settings and languages.
-      if (shown !== null) {
-        localeNames = null
-        if (!settingsPanel.hidden) loadSettings()
-      }
-      return show(null)
-    }
-    if (state.connected) return show('progress', { title: `Booting ${label(state.avd || state.serial)}` })
+    const isPhone = state.connected && state.kind === 'device'
+    if (!isPhone) pickingAVD = false
+    if (!isPhone) stopDecoding()
+    el('shutdown').hidden = isPhone
+    el('pick-avd').hidden = !isPhone
+    el('back-to-phone').hidden = !isPhone
+    el('back-to-phone').textContent = `Back to ${state.model || 'the phone'}`
+    el('unauthorized').hidden = state.connected || !state.unauthorized
+    el('phone-error').hidden = state.connected || !state.phoneError
+    el('phone-error').textContent = `A phone is connected but cannot show; trying again shortly. ${state.phoneError || ''}`
+    const failure = state.launch?.phase === 'failed' ? state.launch.error : ''
+    if (state.connected && !isPhone) return state.booted ? showDevice() : show('progress', { title: `Booting ${label(state.avd || state.serial)}` })
     if (state.launch?.phase === 'starting') return show('progress', { title: `Starting ${label(state.launch.avd)}` })
-    show('picker', { error: state.launch?.phase === 'failed' ? state.launch.error : '' })
+    if (isPhone && !pickingAVD) return state.booted ? showDevice() : show('progress', { title: `Booting ${state.model || state.serial}` })
+    show('picker', { error: failure })
   }
+
+  // The device may be another one now, with other settings and languages.
+  function showDevice() {
+    if (shown !== null) {
+      localeNames = null
+      if (!settingsPanel.hidden) loadSettings()
+    }
+    show(null)
+  }
+
+  el('pick-avd').addEventListener('click', () => { pickingAVD = true; if (lastState) render(lastState) })
+  el('back-to-phone').addEventListener('click', () => { pickingAVD = false; if (lastState) render(lastState) })
 
   // Starting and booting share the progress panel, so its clock runs on from one to the other.
   function show(name, options = {}) {
@@ -496,8 +535,9 @@
   }
 
   function draw(header, rgb) {
-    const width = header.getUint32(0, true)
-    const height = header.getUint32(4, true)
+    stopDecoding()
+    const width = header.getUint32(1, true)
+    const height = header.getUint32(5, true)
     // An empty frame means the display went off: black out the screen, keep its size.
     if (!width || !height) {
       context.fillStyle = '#000'
@@ -505,10 +545,8 @@
       return
     }
     if (!image || image.width !== width || image.height !== height) {
-      canvas.width = width
-      canvas.height = height
+      resize(width, height)
       image = context.createImageData(width, height)
-      fit()
     }
     const out = image.data
     for (let from = 0, to = 0; from < rgb.length; from += 3, to += 4) {
@@ -518,6 +556,82 @@
       out[to + 3] = 255
     }
     context.putImageData(image, 0, 0)
+  }
+
+  function resize(width, height) {
+    if (canvas.width === width && canvas.height === height) return
+    canvas.width = width
+    canvas.height = height
+    fit()
+  }
+
+  // A phone's video is H.264 that WebCodecs decodes: each config packet (SPS and PPS) configures the decoder, and
+  // rides along with every key frame after it, since a key frame of an Annex B stream must carry them.
+  let decoder = null
+  let config = null
+  // A decoder this far behind skips to the next key frame rather than drawing a screen ever later.
+  const MAX_DECODE_QUEUE = 6
+  let needsKeyFrame = true
+  let chunkTime = 0
+
+  function decodePacket(header, data) {
+    const width = header.getUint32(1, true)
+    const height = header.getUint32(5, true)
+    const flags = header.getUint32(9, true)
+    image = null
+    if (flags & IS_CONFIG) {
+      config = data.slice()
+      if (!decoder || decoder.state === 'closed') {
+        decoder = new VideoDecoder({ output: drawVideoFrame, error: restartVideo })
+      }
+      decoder.configure({ codec: codecOf(config), optimizeForLatency: true })
+      needsKeyFrame = true
+      resize(width, height)
+      return
+    }
+    if (!decoder || decoder.state !== 'configured') return
+    const isKeyFrame = (flags & IS_KEY_FRAME) !== 0
+    if (needsKeyFrame && !isKeyFrame) return
+    if (!isKeyFrame && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+      needsKeyFrame = true
+      return
+    }
+    needsKeyFrame = false
+    let bytes = data
+    if (isKeyFrame) {
+      bytes = new Uint8Array(config.length + data.length)
+      bytes.set(config)
+      bytes.set(data, config.length)
+    }
+    chunkTime += 16667
+    decoder.decode(new EncodedVideoChunk({ type: isKeyFrame ? 'key' : 'delta', timestamp: chunkTime, data: bytes }))
+  }
+
+  function drawVideoFrame(frame) {
+    context.drawImage(frame, 0, 0, canvas.width, canvas.height)
+    frame.close()
+  }
+
+  // A decoder that failed is closed; a new socket brings a fresh config packet and key frame to start over from.
+  function restartVideo(error) {
+    console.warn('video decoding failed', error)
+    decoder = null
+    socket?.close()
+  }
+
+  function stopDecoding() {
+    if (decoder && decoder.state !== 'closed') decoder.close()
+    decoder = null
+  }
+
+  // avc1.PPCCLL: profile, constraint flags and level, the three bytes after the SPS's NAL header.
+  function codecOf(annexB) {
+    for (let i = 0; i + 3 < annexB.length; i++) {
+      if (annexB[i] === 0 && annexB[i + 1] === 0 && annexB[i + 2] === 1 && (annexB[i + 3] & 0x1f) === 7) {
+        return 'avc1.' + [...annexB.slice(i + 4, i + 7)].map(b => b.toString(16).padStart(2, '0')).join('')
+      }
+    }
+    return 'avc1.42e01f'
   }
 
   // Scale the screen to the side that runs out first, so a resize never changes its proportions.

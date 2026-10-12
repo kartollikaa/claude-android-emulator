@@ -84,6 +84,8 @@ func Dial(ctx context.Context, emulator discovery.Emulator, logger *slog.Logger)
 
 func (c *Conn) Serial() string { return c.discovered.Serial }
 
+func (c *Conn) Kind() device.Kind { return device.Emulator }
+
 func (c *Conn) Name() string { return c.discovered.AVD }
 
 func (c *Conn) Panel() device.Size { return c.panel }
@@ -153,8 +155,8 @@ func (c *Conn) Touch(ctx context.Context, x, y float64, isDown bool) error {
 	}
 	panelX, panelY := toPanel(device.Rotation(c.rotation.Load()), x, y)
 	_, err := c.client.SendTouch(ctx, &pb.TouchEvent{Touches: []*pb.Touch{{
-		X:        toPixel(panelX, c.panel.Width),
-		Y:        toPixel(panelY, c.panel.Height),
+		X:        device.ToPixel(panelX, c.panel.Width),
+		Y:        device.ToPixel(panelY, c.panel.Height),
 		Pressure: pressure,
 	}}})
 
@@ -260,10 +262,4 @@ func (c *Conn) Text(ctx context.Context, text string) error {
 	_, err := c.client.SendKey(ctx, &pb.KeyboardEvent{EventType: pb.KeyboardEvent_keypress, Text: text})
 
 	return err
-}
-
-func toPixel(fraction float64, extent int) int32 {
-	clamped := math.Min(1, math.Max(0, fraction))
-
-	return int32(math.Round(clamped * float64(extent-1)))
 }

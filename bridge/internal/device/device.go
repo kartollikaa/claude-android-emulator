@@ -3,14 +3,32 @@ package device
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"slices"
+)
+
+var (
+	// ErrCannotShutDown is a phone's answer to Shutdown: only an emulator powers off from the live view.
+	ErrCannotShutDown = errors.New("only an emulator shuts down from here; a phone keeps its own power button")
+	// ErrUnknownKey is returned for a key name the device has no key for.
+	ErrUnknownKey = errors.New("unknown key")
+)
+
+// Kind tells an emulator from a phone adb reaches.
+type Kind string
+
+const (
+	Emulator Kind = "emulator"
+	Phone    Kind = "device"
 )
 
 // Device is one connected Android device: its screen as a stream of frames, its input, and its lifecycle.
 type Device interface {
 	Serial() string
-	// Name is the AVD's name for an emulator.
+	Kind() Kind
+	// Name is the AVD's name for an emulator, the model for a phone.
 	Name() string
 	// Panel is the native portrait panel size, whatever the rotation.
 	Panel() Size
@@ -39,13 +57,27 @@ type Size struct {
 	Height int `json:"height"`
 }
 
-// Frame is one screen image: RGB888, rows top-down, drawn upright for the device's rotation; 0×0 means the display is off.
+// Frame is one screen image drawn upright for the device's rotation: an emulator's RGB888, rows top-down, 0×0 when
+// the display is off; or a phone's H.264 packet in Video, Width×Height then being the size of the video it belongs to.
 type Frame struct {
 	Seq      uint32
 	Width    int
 	Height   int
 	Rotation Rotation
 	RGB      []byte
+	Video    *Packet
+}
+
+// Packet is one Annex B packet of a phone's video: a config packet (SPS and PPS), a key frame, or a frame that needs those before it.
+type Packet struct {
+	Data       []byte
+	IsConfig   bool
+	IsKeyFrame bool
+}
+
+// VideoResetter is a device whose video can start over: a config packet and a key frame follow soon after.
+type VideoResetter interface {
+	ResetVideo() error
 }
 
 // Rotation is how far the device is turned counter-clockwise from its natural portrait, in quarter turns.
@@ -70,4 +102,11 @@ func (r *Rotation) UnmarshalText(text []byte) error {
 	*r = Rotation(index)
 
 	return nil
+}
+
+// ToPixel turns a fraction of a side extent pixels long into a pixel on it, clamped to the side.
+func ToPixel(fraction float64, extent int) int32 {
+	clamped := math.Min(1, math.Max(0, fraction))
+
+	return int32(math.Round(clamped * float64(extent-1)))
 }

@@ -63,6 +63,8 @@ func startBridge(t *testing.T, options ...func(*Config)) *harness {
 		AVDHome:       t.TempDir(),
 		LogDir:        t.TempDir(),
 		CapturesDir:   t.TempDir(),
+		// No adb, so no real phone plugged into this machine shows in a test.
+		ADB: filepath.Join(dir, "no-adb"),
 	}
 	for _, option := range options {
 		option(&config)
@@ -89,7 +91,12 @@ func testContext(t *testing.T) context.Context {
 
 func (h *harness) waitFor(t *testing.T, condition func(State) bool) State {
 	t.Helper()
-	deadline := time.Now().Add(patience)
+	return h.waitForWithin(t, patience, condition)
+}
+
+func (h *harness) waitForWithin(t *testing.T, limit time.Duration, condition func(State) bool) State {
+	t.Helper()
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		if state := h.status(t); condition(state) {
 			return state
@@ -148,10 +155,10 @@ func readFrame(t *testing.T, ctx context.Context, socket *websocket.Conn) (width
 		if kind != websocket.MessageBinary {
 			continue
 		}
-		if len(data) < frameHeaderBytes {
-			t.Fatalf("frame of %d bytes has no header", len(data))
+		if len(data) < frameHeaderBytes || data[0] != frameRGB {
+			t.Fatalf("frame of %d bytes is not an RGB frame", len(data))
 		}
-		return binary.LittleEndian.Uint32(data[0:]), binary.LittleEndian.Uint32(data[4:]), binary.LittleEndian.Uint32(data[8:]), data[frameHeaderBytes:]
+		return binary.LittleEndian.Uint32(data[1:]), binary.LittleEndian.Uint32(data[5:]), binary.LittleEndian.Uint32(data[9:]), data[frameHeaderBytes:]
 	}
 }
 
@@ -352,6 +359,7 @@ func TestStatusConnected(t *testing.T) {
 		Connected: true,
 		Booted:    true,
 		Serial:    "emulator-5556",
+		Kind:      device.Emulator,
 		Device:    deviceSize(),
 		Stream:    streamSize(),
 		Seq:       7,

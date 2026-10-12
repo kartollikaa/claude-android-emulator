@@ -1,6 +1,6 @@
 {
   "name": "android-emulator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Runs the Android emulator in the Claude desktop app: /emulator opens its live view in the browser pane, one Start button boots it",
   "author": {
     "name": "Dmitrii Maksimov"

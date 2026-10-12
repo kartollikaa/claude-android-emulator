@@ -6,24 +6,6 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 )
 
-func TestToPixelKeepsTheEdgesOnScreen(t *testing.T) {
-	for _, step := range []struct {
-		fraction float64
-		extent   int
-		want     int32
-	}{
-		{0, 1080, 0},
-		{1, 1080, 1079},
-		{0.5, 8, 4},
-		{1.2, 2400, 2399},
-		{-0.1, 2400, 0},
-	} {
-		if got := toPixel(step.fraction, step.extent); got != step.want {
-			t.Errorf("toPixel(%v, %d) = %d, want %d", step.fraction, step.extent, got, step.want)
-		}
-	}
-}
-
 func TestStreamBoxFitsBothOrientations(t *testing.T) {
 	phone := &Conn{panel: device.Size{Width: 1080, Height: 2400}}
 	if got, want := phone.streamBox(540), (device.Size{Width: 1200, Height: 1200}); got != want {

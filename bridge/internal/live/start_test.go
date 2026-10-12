@@ -80,7 +80,10 @@ func launches(sdkRoot string) []launched {
 }
 
 func withSDK(root string) func(*Config) {
-	return func(config *Config) { config.SDKCandidates = []string{root} }
+	return func(config *Config) {
+		config.SDKCandidates = []string{root}
+		config.ADB = filepath.Join(root, "platform-tools", "adb")
+	}
 }
 
 func send(t *testing.T, h *harness, method, path, contentType, origin, body string) (int, string) {

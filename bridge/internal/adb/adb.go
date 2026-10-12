@@ -74,3 +74,30 @@ func ResolvedComponent(resolved string) string {
 
 // IsPackageName reports whether name is an Android application id.
 func IsPackageName(name string) bool { return packageName.MatchString(name) }
+
+// Listed is one device of `adb devices -l`: its serial, its state (device, unauthorized, offline, ...) and whether USB carries it.
+type Listed struct {
+	Serial string
+	State  string
+	IsUSB  bool
+}
+
+// ParseDevices reads `adb devices -l`, skipping its heading and the daemon's notes.
+func ParseDevices(output string) []Listed {
+	var listed []Listed
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || strings.HasPrefix(line, "List of devices") || strings.HasPrefix(line, "*") {
+			continue
+		}
+		device := Listed{Serial: fields[0], State: fields[1]}
+		for _, field := range fields[2:] {
+			if strings.HasPrefix(field, "usb:") {
+				device.IsUSB = true
+			}
+		}
+		listed = append(listed, device)
+	}
+
+	return listed
+}

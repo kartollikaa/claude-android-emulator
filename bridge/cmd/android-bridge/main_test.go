@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,7 +34,7 @@ var liveViewURL = regexp.MustCompile(`^http://127\.0\.0\.1:([0-9]+)$`)
 func bridgeCommand(t *testing.T, name string, args ...string) *exec.Cmd {
 	t.Helper()
 	empty := t.TempDir()
-	cmd := exec.Command(name, append(args, "-port", "0", "-discovery-dir", empty, "-sdk", empty)...)
+	cmd := exec.Command(name, append(args, "-port", "0", "-discovery-dir", empty, "-sdk", empty, "-adb", filepath.Join(empty, "no-adb"))...)
 	cmd.Env = append(os.Environ(), beTheBridge+"=1")
 	return cmd
 }

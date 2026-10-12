@@ -2,7 +2,7 @@
 
 ## Goal
 
-An Android emulator or USB device, live and interactive, inside the Claude desktop app's Code
+An Android emulator or a connected device (USB or Wi-Fi), live and interactive, inside the Claude desktop app's Code
 tab, plus tools that let Claude see and drive it while it builds an app. The desktop app's
 built-in iOS Simulator panel is the reference experience.
 
@@ -13,8 +13,10 @@ binaries) and asks Claude to open its live view in the app's built-in browser pa
 the SDK's virtual devices, boots one from a Start button and shows it live and touchable; a toolbar
 rotates it, saves screenshots and screen recordings, opens App info and presses Power, and a settings
 panel switches the dark theme, font size, display size and language; Claude's `emulator` tool
-sees and drives the same device; the emulator outlives the session. The in-pane live view, the terminal code and the prototype helper
-are gone. See the spike log at the end.
+sees and drives the same device; the emulator outlives the session. With no emulator running, a phone
+adb reaches over USB or Wi-Fi shows the same way, streamed by the embedded scrcpy server and decoded in
+the page. The in-pane live view, the terminal code and the prototype helper are gone. See the spike
+log at the end.
 
 ## Findings
 
@@ -143,32 +145,50 @@ One PR per item, each reviewed before the next starts.
    bridge's HTTP API.
 8. **Device seam**: the bridge drives a device interface instead of `*emulator.Conn`, the emulator
    its only implementation; no behaviour change.
-9. **USB devices**: a phone plugged in over USB shows in the live view and answers Claude's tool
-   (see USB devices below).
+9. **Connected devices**: a phone adb reaches over USB or Wi-Fi shows in the live view and answers
+   Claude's tool (see Connected devices below).
 10. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and cross-compiled binaries),
    README, public repository.
 
 Later: one emulator or device per session, each bridge claiming its own.
 
-### USB devices
+### Connected devices
 
+- **Any transport adb has.** A phone plugged in over USB, one on wireless debugging (Android 11+,
+  paired once; adb reconnects it through mDNS) and one reached with `adb connect` all show the same
+  way: scrcpy runs over whatever transport adb uses. A phone listed twice (USB and Wi-Fi, the same
+  `ro.serialno`) counts once, over USB. Pairing a new phone over Wi-Fi is not covered yet.
 - **Which device shows.** A running emulator first, as today; with none, the first adb device in the
-  `device` state that is not an emulator. Starting an emulator from the page switches the view to
-  it; shutting it down falls back to the phone. A phone in the `unauthorized` state shows on the page
-  with a hint to allow USB debugging on it.
-- **Video.** The bridge runs the pinned scrcpy server (video H.264, no audio, control on, long side
-  from `-stream-width`) and forwards its packets to the page untouched; the page decodes them with
-  WebCodecs and draws each frame on the canvas. A viewer that joins late gets the newest config
-  packet and the packets since the newest key frame; when that backlog grows too large, or a viewer
-  falls behind, the bridge asks for `RESET_VIDEO` and starts over from the next key frame. The bridge
-  reads the current video size from each SPS.
+  `device` state that is not a discovered emulator. While a phone shows, the bridge keeps looking for
+  emulators and switches to one as it answers. The page's Virtual devices button opens the AVD list
+  over the phone; Starting one switches the view to it, and shutting it down falls back to the phone.
+  A phone in the `unauthorized` state shows on the page with a hint to allow USB debugging on it. A
+  phone whose stream fails before its first frame is tried again at doubling intervals, capped,
+  until it streams or leaves adb's list; the page and Claude's tool say why it does not show.
+  `/status` names the `kind` (`emulator` or `device`), a phone's `model` and whether it is on `wifi`.
+- **Video.** The bridge runs the pinned scrcpy server (video H.264, no audio, control on, clipboard
+  sync off, long side from `-stream-width`) and forwards its packets to the page untouched; the page
+  decodes them with WebCodecs and draws each frame on the canvas, the newest config packet riding
+  along with every key frame (an Annex B key frame must carry SPS and PPS). Each viewer follows the
+  packets in order: one that joins late gets the newest config packet and the packets since the
+  newest key frame. A backlog past its cap drops its oldest packets and can no longer start a viewer,
+  and a viewer too far behind starts over; either then asks for `RESET_VIDEO` once and starts from
+  the key frame it brings. Viewers that keep up never wait for a reset. The bridge reads the current
+  video size from each SPS and the display's rotation from `dumpsys window` when the size changes.
+- **Bandwidth.** Over USB the server keeps its default bit rate; over the network (a `host:port` or
+  mDNS serial) the bridge asks for half of it, plenty for a phone screen at the stream's size.
 - **Input.** Touches, keys and text go to the scrcpy control socket, touches in the current video's
-  pixels. Rotation sets `user_rotation` through adb with auto-rotate off, since scrcpy's own rotate
-  message only toggles.
+  pixels and keys as Android key codes. Text goes through the phone's key map, so only what it has
+  (ASCII) arrives. Rotation sets `user_rotation` a quarter on from the locked rotation (the display's,
+  if auto-rotate was on) with auto-rotate off, since scrcpy's own rotate message only toggles; an app
+  locked to portrait stays so, as the emulator's does when its sensor turns.
 - **Everything else** runs over adb against the phone's serial, as for an emulator: screenshots
   (`screencap -p`, scaled and JPEG-encoded in the bridge for Claude), recordings, App info, links,
-  launching and installing apps, logs and the device settings. Shut down is an emulator's only: the
-  page hides it and the route refuses it for a phone; Power sleeps and wakes the phone.
+  launching and installing apps, logs and the device settings. A Wi-Fi serial (`host:port`, an mDNS
+  service name) is made safe before it names a capture file. The panel size is `wm size`'s override
+  when one is set, since the display then draws at it. Shut down is an emulator's only: the page
+  hides it and the route answers 409 for a phone; Power sleeps and wakes the phone. Claude's tool
+  drives a phone as it does an emulator, and its `start` only says a phone is shown.
 
 ## Decisions
 
@@ -245,4 +265,5 @@ Later: one emulator or device per session, each bridge claiming its own.
 | Claude's tool on the real emulator | The same fake API scripted start, screenshot, Home, a swipe, settings, logs and an off-screen tap against Pixel_7: each answered as expected and the JPEG reached the request as an image block. It caught a race: a bridge just started reported no emulator before it had looked, so start tried to boot a second one; `/status` now waits for that first look |
 | WebCodecs in the browser pane | The pane's Chromium is a secure context on `http://127.0.0.1`, has `VideoDecoder`, and supports H.264 Baseline, Main and High (`avc1.42E01E`, `avc1.4D401F`, `avc1.640028`), hardware acceleration preferred |
 | scrcpy server 3.3.3 against Pixel_7 | Pushed, started with `tunnel_forward=true audio=false control=true max_size=1080 send_device_meta=false`, reached through `adb forward tcp:… localabstract:scrcpy_<scid>`: the dummy byte, then codec metadata `h264` 488×1080, a 33-byte config packet (SPS, PPS) and a key frame. Home by key code, a tap carrying the video size opened a Settings row, `RESET_VIDEO` gave a fresh config packet and key frame. `ROTATE_DEVICE` set `user_rotation` but turned nothing in a portrait-locked activity |
+| Pixel 9a (Android 17) over USB through the bridge | With no emulator, the bridge attached to the phone within a second of starting: `/status` named it `device`, `Pixel 9a`, booted, panel 1080×2424 from `wm size`, video 536×1208 (H.264 High 3.2, a 31-byte config packet) at `-stream-width 540`. A new viewer got the state, then the config packet and a key frame. Home by key code and `/launch` of Settings acted on the phone. `/screen` took 0.6–0.7 s on a still screen, almost all of it `screencap -p` on the phone, and up to 2.5 s right after an action. The launcher stays portrait whatever `user_rotation` says, so rotation counts on from `user_rotation`, not the display's. When an emulator shut down, the bridge fell back to the phone about a second later. A bridge stopped by SIGTERM first left its `adb forward` behind (it exited before the stream's cleanup); it now waits for it. Second run, after the review fixes: the live view in the browser pane decoded the phone's video through WebCodecs and drew it; a swipe from the page at a human pace opened the app drawer (the browser tool's own drag lands in a few milliseconds and the launcher ignores it), and the page's Home answered; in Settings a turn left gave a 1208×536 video and `landscape`, a turn right brought back 536×1208 and `portrait`; `/screenshot` saved a PNG, `/shutdown` answered 409. SIGTERM left no forward and no server process on the phone. Not yet measured: packet and byte rates while scrolling, Wi-Fi |
 | `$.http.fetch` on a slow answer | A throwaway mod fetched from a server that answers after 30 s: the fetch was aborted at 30 s with `no complete answer within 30000ms`. The bridge's boot wait answers well inside that, and a cold boot from the tool (snapshot boot) finished inside a single wait |

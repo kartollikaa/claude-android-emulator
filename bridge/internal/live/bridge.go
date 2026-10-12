@@ -1,4 +1,4 @@
-// Package live keeps one emulator connected and serves its screen and input to the live view.
+// Package live keeps one emulator or phone connected and serves its screen and input to the live view.
 package live
 
 import (
@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
@@ -31,15 +32,26 @@ type Config struct {
 	LogDir        string
 	// CapturesDir is where screenshots and screen recordings are saved.
 	CapturesDir string
-	Now         func() time.Time
+	// ADB is the adb binary; empty finds the SDK's, then the one on PATH.
+	ADB string
+	Now func() time.Time
 }
 
-// State is what the bridge knows about the emulator, as /status and the live view see it.
+// State is what the bridge knows about the device it shows, as /status and the live view see it.
 type State struct {
-	Connected      bool            `json:"connected"`
-	Booted         bool            `json:"booted"`
-	Serial         string          `json:"serial"`
-	AVD            string          `json:"avd"`
+	Connected bool        `json:"connected"`
+	Booted    bool        `json:"booted"`
+	Serial    string      `json:"serial"`
+	Kind      device.Kind `json:"kind,omitempty"`
+	// AVD names an emulator's virtual device, Model a phone.
+	AVD   string `json:"avd"`
+	Model string `json:"model,omitempty"`
+	// WiFi says adb reaches the phone over the network.
+	WiFi bool `json:"wifi,omitempty"`
+	// Unauthorized is a phone that waits for USB debugging to be allowed on it, while nothing shows.
+	Unauthorized string `json:"unauthorized,omitempty"`
+	// PhoneError says why a phone adb lists does not show: its stream failed and the bridge waits before it tries again.
+	PhoneError     string          `json:"phoneError,omitempty"`
 	Device         device.Size     `json:"device"`
 	Stream         device.Size     `json:"stream"`
 	Seq            uint32          `json:"seq"`
@@ -79,11 +91,16 @@ type Bridge struct {
 	launch    Launch
 	launchID  uint64
 	latest    *device.Frame
+	video     videoLog
 	viewers   map[chan struct{}]struct{}
 	recording *recording
 	// Closed once Run has first looked for a running emulator, so a state read before it does not say none runs.
 	looked     chan struct{}
 	markLooked func()
+	// serialNumbers caches each adb serial's ro.serialno, which tells a phone listed twice.
+	serialNumbers map[string]string
+	// phoneFailures holds each phone whose stream failed before its first frame, until one streams or adb drops it.
+	phoneFailures map[string]phoneFailure
 }
 
 // New makes a bridge; Run connects it.
@@ -122,10 +139,17 @@ func New(config Config) *Bridge {
 
 	looked := make(chan struct{})
 
-	return &Bridge{config: config, viewers: map[chan struct{}]struct{}{}, looked: looked, markLooked: sync.OnceFunc(func() { close(looked) })}
+	return &Bridge{
+		config:        config,
+		viewers:       map[chan struct{}]struct{}{},
+		looked:        looked,
+		markLooked:    sync.OnceFunc(func() { close(looked) }),
+		serialNumbers: map[string]string{},
+		phoneFailures: map[string]phoneFailure{},
+	}
 }
 
-// Run keeps an emulator connected until ctx ends, starting over whenever it goes away.
+// Run keeps a device connected until ctx ends, starting over whenever it goes away: a running emulator first, else a phone.
 func (b *Bridge) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		conn := b.connect(ctx)
@@ -139,8 +163,21 @@ func (b *Bridge) Run(ctx context.Context) {
 		b.config.Logger.Info("device connected", "serial", conn.Serial(), "device", conn.Panel())
 		streaming, stopStreaming := context.WithCancel(ctx)
 		go b.watchBoot(streaming, conn)
-		err := conn.Stream(streaming, b.config.StreamWidth, b.publish)
+		if conn.Kind() == device.Phone {
+			go b.watchForEmulator(streaming, stopStreaming)
+		}
+		var hasStreamed atomic.Bool
+		err := conn.Stream(streaming, b.config.StreamWidth, func(frame device.Frame) {
+			if hasStreamed.CompareAndSwap(false, true) {
+				b.forgetFailures(conn.Serial())
+			}
+			b.publish(frame)
+		})
+		isSwitched := streaming.Err() != nil
 		stopStreaming()
+		if conn.Kind() == device.Phone && !isSwitched && !hasStreamed.Load() {
+			b.noteFailure(conn.Serial(), err)
+		}
 		b.detach()
 		conn.Close()
 		if ctx.Err() == nil {
@@ -151,6 +188,14 @@ func (b *Bridge) Run(ctx context.Context) {
 }
 
 func (b *Bridge) connect(ctx context.Context) device.Device {
+	if conn := b.connectEmulator(ctx); conn != nil {
+		return conn
+	}
+
+	return b.connectPhone(ctx)
+}
+
+func (b *Bridge) connectEmulator(ctx context.Context) device.Device {
 	found, err := discovery.Find(b.config.DiscoveryDir)
 	if err != nil {
 		b.config.Logger.Warn("cannot read the emulator discovery dir", "dir", b.config.DiscoveryDir, "err", err)
@@ -172,8 +217,18 @@ func (b *Bridge) attach(conn device.Device) {
 	b.mu.Lock()
 	b.conn = conn
 	b.latest = nil
-	b.state = b.keepingCaptures(State{Connected: true, Serial: conn.Serial(), AVD: conn.Name(), Device: conn.Panel()})
-	if b.launch.Phase == launchFailed || b.launch.AVD == conn.Name() {
+	b.video = videoLog{generation: b.video.generation + 1}
+	state := State{Connected: true, Serial: conn.Serial(), Kind: conn.Kind(), Device: conn.Panel()}
+	if conn.Kind() == device.Emulator {
+		state.AVD = conn.Name()
+	} else {
+		state.Model = conn.Name()
+		wireless, isWireless := conn.(interface{ IsWiFi() bool })
+		state.WiFi = isWireless && wireless.IsWiFi()
+	}
+	b.state = b.keepingCaptures(state)
+	// A phone attaching says nothing about a launch, which may still be starting or have failed beside it.
+	if conn.Kind() == device.Emulator && (b.launch.Phase == launchFailed || b.launch.AVD == conn.Name()) {
 		b.launch = Launch{}
 	}
 	b.mu.Unlock()
@@ -206,7 +261,8 @@ func (b *Bridge) detach() {
 	b.mu.Lock()
 	b.conn = nil
 	b.latest = nil
-	b.state = b.keepingCaptures(State{})
+	b.video = videoLog{generation: b.video.generation + 1}
+	b.state = b.keepingCaptures(State{Unauthorized: b.state.Unauthorized, PhoneError: b.state.PhoneError})
 	b.mu.Unlock()
 	b.notifyViewers()
 }
@@ -220,7 +276,11 @@ func (b *Bridge) keepingCaptures(state State) State {
 
 func (b *Bridge) publish(frame device.Frame) {
 	b.mu.Lock()
-	b.latest = &frame
+	if frame.Video != nil {
+		b.video.add(&frame)
+	} else {
+		b.latest = &frame
+	}
 	b.state.Seq = frame.Seq
 	if frame.Width > 0 && frame.Height > 0 {
 		b.state.Stream = device.Size{Width: frame.Width, Height: frame.Height}
@@ -288,8 +348,12 @@ func (b *Bridge) Input(ctx context.Context, message Message) error {
 	if conn == nil {
 		return ErrNoEmulator
 	}
+	err = deliver(ctx, conn)
+	if errors.Is(err, device.ErrUnknownKey) {
+		return fmt.Errorf("%w: %w", ErrBadInput, err)
+	}
 
-	return deliver(ctx, conn)
+	return err
 }
 
 // delivery checks the message and returns the emulator call it stands for.
