@@ -93,6 +93,7 @@ func (w *Watcher) check(ctx context.Context, now time.Time) bool {
 	}
 	if presence := Look(PresenceDir(w.LogDir), w.AVD, now); presence.IsShown {
 		w.lastShown = now
+		w.askedAt, w.terminated = time.Time{}, false
 		if presence.Period != w.Period {
 			w.Logger.Info("idle period changed", "avd", w.AVD, "idle", presence.Period)
 			w.Period = presence.Period

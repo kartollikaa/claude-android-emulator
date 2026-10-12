@@ -16,6 +16,7 @@ import (
 
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/proc"
 )
 
 const period = time.Minute
@@ -242,5 +243,28 @@ func TestRunShutsDownAnIdleEmulatorAndEndsWithIt(t *testing.T) {
 	}
 	if _, err := os.Stat(LockPath(watcher.LogDir, watcher.AVD, pid)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the lock file stayed behind: %v", err)
+	}
+}
+
+func TestAnEmulatorShownAgainAfterItsShutdownWasAskedWaitsAFullPeriod(t *testing.T) {
+	fake, watcher := watched(t)
+	ctx := context.Background()
+	watcher.Period = 10 * time.Minute
+	asked := t0.Add(watcher.Period)
+	watcher.check(ctx, asked)
+	if shutdowns(fake) != 1 {
+		t.Fatal("the idle emulator was not asked to shut down")
+	}
+
+	mark := Mark{Dir: PresenceDir(watcher.LogDir), AVD: "Pixel_7", PID: os.Getpid(), Period: watcher.Period}
+	shown := asked.Add(time.Second)
+	writeMark(t, mark, shown)
+	watcher.check(ctx, shown)
+	mark.Remove()
+	watcher.check(ctx, shown.Add(shutdownGrace+time.Second))
+
+	time.Sleep(300 * time.Millisecond)
+	if !proc.Alive(watcher.PID) {
+		t.Fatal("the emulator was stopped the hard way before a full idle period passed since it was last shown")
 	}
 }
