@@ -569,6 +569,8 @@
   // rides along with every key frame after it, since a key frame of an Annex B stream must carry them.
   let decoder = null
   let config = null
+  // A decoder this far behind skips to the next key frame rather than drawing a screen ever later.
+  const MAX_DECODE_QUEUE = 6
   let needsKeyFrame = true
   let chunkTime = 0
 
@@ -590,6 +592,10 @@
     if (!decoder || decoder.state !== 'configured') return
     const isKeyFrame = (flags & IS_KEY_FRAME) !== 0
     if (needsKeyFrame && !isKeyFrame) return
+    if (!isKeyFrame && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+      needsKeyFrame = true
+      return
+    }
     needsKeyFrame = false
     let bytes = data
     if (isKeyFrame) {
