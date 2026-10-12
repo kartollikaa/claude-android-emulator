@@ -91,7 +91,12 @@ func testContext(t *testing.T) context.Context {
 
 func (h *harness) waitFor(t *testing.T, condition func(State) bool) State {
 	t.Helper()
-	deadline := time.Now().Add(patience)
+	return h.waitForWithin(t, patience, condition)
+}
+
+func (h *harness) waitForWithin(t *testing.T, limit time.Duration, condition func(State) bool) State {
+	t.Helper()
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		if state := h.status(t); condition(state) {
 			return state

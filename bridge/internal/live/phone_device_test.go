@@ -41,6 +41,9 @@ const (
 
 var videoSize = device.Size{Width: 536, Height: 1208}
 
+// A phone attaches through a dozen adb calls, each a shell script here, which takes a while on a loaded machine.
+const attachPatience = 10 * time.Second
+
 // The fake phone's getprop, wm and settings: a Pixel 9a whose settings live in setting-<name> files.
 var phoneCommands = map[string]string{
 	"getprop": `#!/bin/sh
@@ -122,7 +125,7 @@ func (s *fakeScrcpy) nextVideo(t *testing.T) net.Conn {
 	case video := <-s.videos:
 		t.Cleanup(func() { video.Close() })
 		return video
-	case <-time.After(patience):
+	case <-time.After(attachPatience):
 		t.Fatal("the bridge never connected to the scrcpy server")
 		return nil
 	}
@@ -201,7 +204,7 @@ func (p *phoneHarness) streaming(t *testing.T) net.Conn {
 	video := p.scrcpy.nextVideo(t)
 	sendPacket(t, video, true, false, configPacket())
 	sendPacket(t, video, false, true, []byte("key frame"))
-	p.waitFor(t, func(state State) bool { return state.Stream == videoSize && state.Booted })
+	p.waitForWithin(t, attachPatience, func(state State) bool { return state.Stream == videoSize && state.Booted })
 	return video
 }
 
@@ -291,7 +294,7 @@ func TestPhoneListedTwiceShowsOverUSB(t *testing.T) {
 func TestUnauthorizedPhoneShowsInTheStatus(t *testing.T) {
 	p := phoneBridge(t, "R5CT30ABCDE unauthorized usb:1-2 transport_id:21")
 
-	state := p.waitFor(t, func(state State) bool { return state.Unauthorized != "" })
+	state := p.waitForWithin(t, attachPatience, func(state State) bool { return state.Unauthorized != "" })
 	if state.Connected || state.Unauthorized != "R5CT30ABCDE" {
 		t.Errorf("status %+v, want nothing connected and R5CT30ABCDE waiting for USB debugging", state)
 	}
@@ -419,9 +422,8 @@ func TestPhoneRotationFollowsTheVideo(t *testing.T) {
 
 	before := len(p.scrcpy.received())
 	postInput(t, p.harness, "application/json", `{"type":"touch","phase":"down","x":0,"y":1}`)
-	if got := p.scrcpy.received()[before:]; len(got) != 32 || binary.BigEndian.Uint16(got[18:]) != uint16(state.Stream.Width) {
-		t.Errorf("the touch after the turn carried %x, want the new video size %+v", got, state.Stream)
-	}
+	turnedFinger := scrcpy.Touch{Action: scrcpy.ActionDown, Pointer: scrcpy.PointerFinger, X: 0, Y: 535, Width: 1208, Height: 536}
+	p.scrcpy.awaitControl(t, before, turnedFinger.Message())
 }
 
 func TestPhoneScreenForClaude(t *testing.T) {
@@ -489,7 +491,7 @@ func TestStartWhileAPhoneShowsThenTheEmulatorTakesOver(t *testing.T) {
 func TestPhoneWithoutVideoYet(t *testing.T) {
 	p := phoneBridge(t, phoneUSB)
 	p.scrcpy.nextVideo(t)
-	p.waitFor(t, func(state State) bool { return state.Connected })
+	p.waitForWithin(t, attachPatience, func(state State) bool { return state.Connected })
 
 	if code := postInput(t, p.harness, "application/json", `{"type":"touch","phase":"down","x":0.5,"y":0.5}`); code != http.StatusBadGateway {
 		t.Errorf("a touch before the first config packet answered %d, want 502", code)
