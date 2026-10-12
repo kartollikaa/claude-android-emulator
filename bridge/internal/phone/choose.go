@@ -1,6 +1,7 @@
 package phone
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/adb"
@@ -12,6 +13,10 @@ type Choice struct {
 	IsFound      bool
 	Unauthorized string
 }
+
+// networkSerial is a serial adb gives a device it reaches over the network: host:port from adb connect, or an mDNS
+// service name from wireless debugging.
+var networkSerial = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[^:\s]+):[0-9]+$|\._adb-tls-connect\._tcp\.?$|\._adb\._tcp\.?$`)
 
 // Choose picks the first phone adb lists in the device state that skip leaves; a phone listed twice, over USB
 // and over Wi-Fi (the same serialNumber), shows over USB.
@@ -35,7 +40,7 @@ func Choose(listed []adb.Listed, skip func(serial string) bool, serialNumber fun
 		return choice
 	}
 	choice.Phone, choice.IsFound = candidates[0], true
-	if len(candidates) == 1 || choice.Phone.IsUSB {
+	if len(candidates) == 1 || !IsWiFi(choice.Phone) {
 		return choice
 	}
 	first := serialNumber(choice.Phone.Serial)
@@ -43,7 +48,7 @@ func Choose(listed []adb.Listed, skip func(serial string) bool, serialNumber fun
 		return choice
 	}
 	for _, other := range candidates[1:] {
-		if other.IsUSB && serialNumber(other.Serial) == first {
+		if !IsWiFi(other) && serialNumber(other.Serial) == first {
 			choice.Phone = other
 			break
 		}
@@ -52,7 +57,8 @@ func Choose(listed []adb.Listed, skip func(serial string) bool, serialNumber fun
 	return choice
 }
 
-// IsWiFi reports whether adb reaches the device over the network: not over USB and not a local emulator.
+// IsWiFi reports whether adb reaches the device over the network, as its serial's shape tells: adb lists no usb:
+// field on some platforms, and an emulator's serial names a console port, not a network address.
 func IsWiFi(device adb.Listed) bool {
-	return !device.IsUSB && !strings.HasPrefix(device.Serial, "emulator-")
+	return networkSerial.MatchString(device.Serial) && !strings.HasPrefix(device.Serial, "emulator-")
 }

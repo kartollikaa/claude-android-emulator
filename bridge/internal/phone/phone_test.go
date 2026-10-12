@@ -24,6 +24,7 @@ func TestChoose(t *testing.T) {
 	wifi := adb.Listed{Serial: wifiSerial, State: "device"}
 	mdns := adb.Listed{Serial: mdnsSerial, State: "device"}
 	other := adb.Listed{Serial: "10.0.0.7:5555", State: "device"}
+	bareUSB := adb.Listed{Serial: usbSerial, State: "device"}
 	emulator := adb.Listed{Serial: "emulator-5554", State: "device"}
 	unauthorized := adb.Listed{Serial: "R5CT30ABCDE", State: "unauthorized", IsUSB: true}
 	offline := adb.Listed{Serial: "10.0.0.9:5555", State: "offline"}
@@ -41,6 +42,7 @@ func TestChoose(t *testing.T) {
 		{"the same phone twice shows over USB", []adb.Listed{wifi, usb}, Choice{Phone: usb, IsFound: true}},
 		{"the same phone three times shows over USB", []adb.Listed{mdns, wifi, usb}, Choice{Phone: usb, IsFound: true}},
 		{"USB listed first stays", []adb.Listed{usb, wifi}, Choice{Phone: usb, IsFound: true}},
+		{"USB with no usb: field still wins", []adb.Listed{wifi, bareUSB}, Choice{Phone: bareUSB, IsFound: true}},
 		{"two phones: the first", []adb.Listed{other, usb}, Choice{Phone: other, IsFound: true}},
 		{"a discovered emulator is skipped", []adb.Listed{emulator, wifi}, Choice{Phone: wifi, IsFound: true}},
 		{"only a discovered emulator", []adb.Listed{emulator}, Choice{}},
@@ -63,10 +65,15 @@ func TestChoose(t *testing.T) {
 
 func TestIsWiFi(t *testing.T) {
 	for serial, want := range map[adb.Listed]bool{
-		{Serial: usbSerial, IsUSB: true}: false,
-		{Serial: wifiSerial}:             true,
-		{Serial: mdnsSerial}:             true,
-		{Serial: "emulator-5554"}:        false,
+		{Serial: usbSerial, IsUSB: true}:                       false,
+		{Serial: usbSerial}:                                    false,
+		{Serial: wifiSerial}:                                   true,
+		{Serial: "[fe80::1c2d:3e4f:5a6b:7c8d]:5555"}:           true,
+		{Serial: "pixel.local:37011"}:                          true,
+		{Serial: mdnsSerial}:                                   true,
+		{Serial: "adb-5C111JEBF10513-Ab12Cd._adb._tcp"}:        true,
+		{Serial: "emulator-5554"}:                              false,
+		{Serial: "R5CT30ABCDE", IsUSB: false, State: "device"}: false,
 	} {
 		if got := IsWiFi(serial); got != want {
 			t.Errorf("IsWiFi(%+v) = %v, want %v", serial, got, want)
