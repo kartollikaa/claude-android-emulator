@@ -156,6 +156,7 @@
       <div class="picker" id="picker" hidden>
         <button class="back" id="back-to-phone" hidden></button>
         <p class="hint" id="unauthorized" hidden>A phone is connected but has not allowed USB debugging yet: unlock it and allow USB debugging in the prompt it shows.</p>
+        <p class="error" id="phone-error" hidden></p>
         <p class="error" id="launch-error" hidden></p>
         <h1>Virtual devices</h1>
         <ul class="avds" id="avds"></ul>
@@ -231,6 +232,8 @@
     el('back-to-phone').hidden = !isPhone
     el('back-to-phone').textContent = `Back to ${state.model || 'the phone'}`
     el('unauthorized').hidden = state.connected || !state.unauthorized
+    el('phone-error').hidden = state.connected || !state.phoneError
+    el('phone-error').textContent = `A phone is connected but cannot show; trying again shortly. ${state.phoneError || ''}`
     const failure = state.launch?.phase === 'failed' ? state.launch.error : ''
     if (state.connected && !isPhone) return state.booted ? showDevice() : show('progress', { title: `Booting ${label(state.avd || state.serial)}` })
     if (state.launch?.phase === 'starting') return show('progress', { title: `Starting ${label(state.launch.avd)}` })

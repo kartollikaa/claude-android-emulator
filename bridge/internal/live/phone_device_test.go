@@ -513,3 +513,40 @@ func TestAFailedLaunchOutlivesThePhoneReconnecting(t *testing.T) {
 		t.Errorf("after the phone reconnected the launch is %+v, want Pixel_7's failure still shown", launch)
 	}
 }
+
+func TestAPhoneThatCannotStreamIsTriedLessAndLessOften(t *testing.T) {
+	p := phoneBridge(t, phoneUSB)
+	writeFile(t, filepath.Join(p.tools, "forward-broken"), "")
+	forwards := func() int {
+		return len(slices.DeleteFunc(adbCalls(p.tools), func(call string) bool { return !strings.Contains(call, "forward tcp:0") }))
+	}
+
+	state := p.waitForWithin(t, attachPatience, func(state State) bool { return state.PhoneError != "" })
+	if !strings.HasPrefix(state.PhoneError, phoneSerial+": ") || !strings.Contains(state.PhoneError, "cannot bind listener") {
+		t.Errorf("phone error %q, want the serial and why its stream failed", state.PhoneError)
+	}
+	before := forwards()
+	time.Sleep(1500 * time.Millisecond)
+	// Every retry interval (20 ms) would be dozens of tries; doubling up to 30 intervals is a handful.
+	if tries := forwards() - before; tries > 6 {
+		t.Errorf("the failing phone was tried %d times in 1.5 s, want it backed off", tries)
+	}
+
+	writeFile(t, filepath.Join(p.tools, "devices"), "List of devices attached\n\n")
+	p.waitForWithin(t, attachPatience, func(state State) bool { return state.PhoneError == "" && !state.Connected })
+	p.bridge.mu.Lock()
+	failures := len(p.bridge.phoneFailures)
+	p.bridge.mu.Unlock()
+	if failures != 0 {
+		t.Errorf("%d failures remembered for phones adb no longer lists", failures)
+	}
+	os.Remove(filepath.Join(p.tools, "forward-broken"))
+	writeFile(t, filepath.Join(p.tools, "devices"), "List of devices attached\n"+phoneUSB+"\n")
+	p.streaming(t)
+	p.bridge.mu.Lock()
+	failures = len(p.bridge.phoneFailures)
+	p.bridge.mu.Unlock()
+	if failures != 0 {
+		t.Errorf("%d failures remembered once the phone streams", failures)
+	}
+}

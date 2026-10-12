@@ -23,7 +23,7 @@ import (
 
 // The fake adb logs calls, keeps device files in device/, records until SIGINT and runs other shell commands through sh with device-bin/ first
 // (ADB_SERIAL naming the device); offline, broken, limit, pull-time and launchable files steer it. For a phone it lists devices, forwards to
-// the port in scrcpy-port, holds the scrcpy server's shell open, answers screencap with screen.png and dumpsys window with window.
+// the port in scrcpy-port (unless forward-broken), holds the scrcpy server's shell open, answers screencap with screen.png and dumpsys window with window.
 const fakeADB = `#!/bin/sh
 d=$(dirname "$0")
 [ "$1" = devices ] && { cat "$d/devices" 2>/dev/null; exit 0; }
@@ -64,7 +64,10 @@ pull)
   [ -f "$d/pull-time" ] && sleep "$(cat "$d/pull-time")"
   cp "$d/device/$(basename "$2")" "$3" ;;
 install) echo "Success" ;;
-forward) [ "$2" = --remove ] || cat "$d/scrcpy-port" ;;
+forward)
+  [ "$2" = --remove ] && exit 0
+  [ -f "$d/forward-broken" ] && { echo "error: cannot bind listener" >&2; exit 1; }
+  cat "$d/scrcpy-port" ;;
 push) ;;
 exec-out) cat "$d/screen.png" ;;
 logcat) echo "logcat $*" ;;

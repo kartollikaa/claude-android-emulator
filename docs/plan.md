@@ -162,7 +162,9 @@ Later: one emulator or device per session, each bridge claiming its own.
   `device` state that is not a discovered emulator. While a phone shows, the bridge keeps looking for
   emulators and switches to one as it answers. The page's Virtual devices button opens the AVD list
   over the phone; Starting one switches the view to it, and shutting it down falls back to the phone.
-  A phone in the `unauthorized` state shows on the page with a hint to allow USB debugging on it.
+  A phone in the `unauthorized` state shows on the page with a hint to allow USB debugging on it. A
+  phone whose stream fails before its first frame is tried again at doubling intervals, capped,
+  until it streams or leaves adb's list; the page and Claude's tool say why it does not show.
   `/status` names the `kind` (`emulator` or `device`), a phone's `model` and whether it is on `wifi`.
 - **Video.** The bridge runs the pinned scrcpy server (video H.264, no audio, control on, clipboard
   sync off, long side from `-stream-width`) and forwards its packets to the page untouched; the page

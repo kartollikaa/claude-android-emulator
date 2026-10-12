@@ -2,6 +2,8 @@ package live
 
 import (
 	"context"
+	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
@@ -17,7 +19,18 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
-const listTimeout = 5 * time.Second
+const (
+	listTimeout = 5 * time.Second
+	// A phone whose stream keeps failing is tried again at doubling intervals, up to this many retry intervals apart.
+	maxPhoneBackoff = 30
+)
+
+// phoneFailure is a phone whose stream failed before its first frame: how often in a row, why, and when to try again.
+type phoneFailure struct {
+	count   int
+	err     string
+	retryAt time.Time
+}
 
 var unsafeInFileName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
@@ -46,7 +59,7 @@ func (b *Bridge) adbPath() (string, error) {
 func (b *Bridge) connectPhone(ctx context.Context) device.Device {
 	path, err := b.adbPath()
 	if err != nil {
-		b.setUnauthorized("")
+		b.setWaiting("", "")
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, listTimeout)
@@ -54,7 +67,7 @@ func (b *Bridge) connectPhone(ctx context.Context) device.Device {
 	output, err := exec.CommandContext(ctx, path, "devices", "-l").Output()
 	if err != nil {
 		b.config.Logger.Debug("adb cannot list devices", "err", err)
-		b.setUnauthorized("")
+		b.setWaiting("", "")
 		return nil
 	}
 	emulators := map[string]bool{}
@@ -65,16 +78,18 @@ func (b *Bridge) connectPhone(ctx context.Context) device.Device {
 	}
 	listed := adb.ParseDevices(string(output))
 	b.forgetUnlisted(listed)
-	choice := phone.Choose(listed, func(serial string) bool { return emulators[serial] }, func(serial string) string {
+	now := time.Now()
+	choice := phone.Choose(listed, func(serial string) bool { return emulators[serial] || b.isBackingOff(serial, now) }, func(serial string) string {
 		return b.serialNumber(ctx, adb.Device{Path: path, Serial: serial})
 	})
 	if !choice.IsFound {
-		b.setUnauthorized(choice.Unauthorized)
+		b.setWaiting(choice.Unauthorized, b.phoneError(listed, emulators))
 		return nil
 	}
 	conn, err := phone.Dial(ctx, choice.Phone, phone.Options{ADB: path, Logger: b.config.Logger, CacheDir: b.config.LogDir})
 	if err != nil {
 		b.config.Logger.Debug("phone did not answer", "serial", choice.Phone.Serial, "err", err)
+		b.noteFailure(choice.Phone.Serial, err)
 		return nil
 	}
 
@@ -105,17 +120,63 @@ func (b *Bridge) serialNumber(ctx context.Context, shell adb.Device) string {
 func (b *Bridge) forgetUnlisted(listed []adb.Listed) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for serial := range b.serialNumbers {
-		if !slices.ContainsFunc(listed, func(device adb.Listed) bool { return device.Serial == serial }) {
-			delete(b.serialNumbers, serial)
-		}
+	isListed := func(serial string) bool {
+		return slices.ContainsFunc(listed, func(device adb.Listed) bool { return device.Serial == serial })
 	}
+	maps.DeleteFunc(b.serialNumbers, func(serial, _ string) bool { return !isListed(serial) })
+	maps.DeleteFunc(b.phoneFailures, func(serial string, _ phoneFailure) bool { return !isListed(serial) })
 }
 
-func (b *Bridge) setUnauthorized(serial string) {
+func (b *Bridge) forgetFailures(serial string) {
 	b.mu.Lock()
-	isChange := b.state.Unauthorized != serial
-	b.state.Unauthorized = serial
+	delete(b.phoneFailures, serial)
+	b.mu.Unlock()
+}
+
+// noteFailure counts one more failure of a phone that never streamed, puts off its next try and says why.
+func (b *Bridge) noteFailure(serial string, err error) {
+	if err == nil {
+		err = errors.New("its stream ended before its first frame")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	failure := b.phoneFailures[serial]
+	failure.count++
+	failure.err = err.Error()
+	delay := b.config.RetryInterval
+	for range failure.count {
+		delay = min(2*delay, b.config.RetryInterval*maxPhoneBackoff)
+	}
+	failure.retryAt = time.Now().Add(delay)
+	b.phoneFailures[serial] = failure
+}
+
+func (b *Bridge) isBackingOff(serial string, now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	failure, ok := b.phoneFailures[serial]
+
+	return ok && now.Before(failure.retryAt)
+}
+
+// phoneError names the first listed phone waiting out a failure, and why it failed.
+func (b *Bridge) phoneError(listed []adb.Listed, emulators map[string]bool) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, device := range listed {
+		if failure, ok := b.phoneFailures[device.Serial]; ok && device.State == "device" && !emulators[device.Serial] {
+			return device.Serial + ": " + failure.err
+		}
+	}
+
+	return ""
+}
+
+// setWaiting notes, while nothing shows, a phone waiting for USB debugging and a phone whose stream failed.
+func (b *Bridge) setWaiting(unauthorized, phoneError string) {
+	b.mu.Lock()
+	isChange := b.state.Unauthorized != unauthorized || b.state.PhoneError != phoneError
+	b.state.Unauthorized, b.state.PhoneError = unauthorized, phoneError
 	b.mu.Unlock()
 	if isChange {
 		b.notifyViewers()

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
@@ -48,7 +49,9 @@ type State struct {
 	// WiFi says adb reaches the phone over the network.
 	WiFi bool `json:"wifi,omitempty"`
 	// Unauthorized is a phone that waits for USB debugging to be allowed on it, while nothing shows.
-	Unauthorized   string          `json:"unauthorized,omitempty"`
+	Unauthorized string `json:"unauthorized,omitempty"`
+	// PhoneError says why a phone adb lists does not show: its stream failed and the bridge waits before it tries again.
+	PhoneError     string          `json:"phoneError,omitempty"`
 	Device         device.Size     `json:"device"`
 	Stream         device.Size     `json:"stream"`
 	Seq            uint32          `json:"seq"`
@@ -96,6 +99,8 @@ type Bridge struct {
 	markLooked func()
 	// serialNumbers caches each adb serial's ro.serialno, which tells a phone listed twice.
 	serialNumbers map[string]string
+	// phoneFailures holds each phone whose stream failed before its first frame, until one streams or adb drops it.
+	phoneFailures map[string]phoneFailure
 }
 
 // New makes a bridge; Run connects it.
@@ -140,6 +145,7 @@ func New(config Config) *Bridge {
 		looked:        looked,
 		markLooked:    sync.OnceFunc(func() { close(looked) }),
 		serialNumbers: map[string]string{},
+		phoneFailures: map[string]phoneFailure{},
 	}
 }
 
@@ -160,8 +166,18 @@ func (b *Bridge) Run(ctx context.Context) {
 		if conn.Kind() == device.Phone {
 			go b.watchForEmulator(streaming, stopStreaming)
 		}
-		err := conn.Stream(streaming, b.config.StreamWidth, b.publish)
+		var hasStreamed atomic.Bool
+		err := conn.Stream(streaming, b.config.StreamWidth, func(frame device.Frame) {
+			if hasStreamed.CompareAndSwap(false, true) {
+				b.forgetFailures(conn.Serial())
+			}
+			b.publish(frame)
+		})
+		isSwitched := streaming.Err() != nil
 		stopStreaming()
+		if conn.Kind() == device.Phone && !isSwitched && !hasStreamed.Load() {
+			b.noteFailure(conn.Serial(), err)
+		}
 		b.detach()
 		conn.Close()
 		if ctx.Err() == nil {
@@ -246,7 +262,7 @@ func (b *Bridge) detach() {
 	b.conn = nil
 	b.latest = nil
 	b.video = videoLog{generation: b.video.generation + 1}
-	b.state = b.keepingCaptures(State{})
+	b.state = b.keepingCaptures(State{Unauthorized: b.state.Unauthorized, PhoneError: b.state.PhoneError})
 	b.mu.Unlock()
 	b.notifyViewers()
 }

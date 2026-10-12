@@ -136,7 +136,8 @@ reconnects when one restarts.
 With no emulator, the bridge shows the first device `adb devices -l` lists in the `device` state that
 is not a running emulator it found; a device listed twice (the same `ro.serialno`, over USB and over
 the network) shows over USB, and one in the `unauthorized` state is named in `/status` as
-`unauthorized`. It pushes the scrcpy server it embeds to `/data/local/tmp`, reaches it through
+`unauthorized`. A phone whose stream fails before its first frame is tried again less and less
+often, until it streams or adb no longer lists it, and `/status` says why in `phoneError`. It pushes the scrcpy server it embeds to `/data/local/tmp`, reaches it through
 `adb forward` and runs it over `adb shell` (H.264, no audio, control on, the clipboard left alone,
 the long side from `-stream-width`, a lower bit rate over the network). While a phone shows, the bridge keeps
 looking for emulators and switches to one as it appears.

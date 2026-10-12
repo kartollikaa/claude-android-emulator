@@ -79,6 +79,7 @@ type State = {
   kind?: string
   model?: string
   serial?: string
+  phoneError?: string
   launch?: { avd: string; phase: string; error?: string }
 }
 
@@ -215,7 +216,8 @@ async function start(call: Call, avd: string | undefined): Promise<Outcome> {
   if (state.booted) return said(`${state.avd || 'An emulator'} is already running.`)
   if (!isUnderWay(state)) {
     const { avds } = await answer<{ avds: { name: string; running: boolean }[] }>(call, 'GET', '/avds')
-    const chosen = avd ?? avds[0]?.name ?? refuse("There is no virtual device; create one in Android Studio's Device Manager.")
+    const noPhone = state.phoneError ? ` A phone is connected but cannot show: ${state.phoneError}.` : ''
+    const chosen = avd ?? avds[0]?.name ?? refuse(`There is no virtual device; create one in Android Studio's Device Manager.${noPhone}`)
     if (!avds.some(listed => listed.name === chosen)) refuse(`No virtual device is named ${chosen}; there are ${avds.map(listed => listed.name).join(', ')}.`)
     const started = await call('POST', '/emulators/start', { avd: chosen })
     // A refusal can be an emulator the bridge attached to since the status above: wait for that one.
