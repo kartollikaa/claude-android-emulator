@@ -64,13 +64,7 @@ func run(port int, config live.Config) error {
 		bridge.Run(ctx)
 		close(ran)
 	}()
-	// A phone's stream removes its adb forward as it ends; the bridge waits for that before it exits.
-	defer func() {
-		select {
-		case <-ran:
-		case <-time.After(cleanupTimeout):
-		}
-	}()
+	defer stopAndWait(stop, ran, cleanupTimeout)
 
 	server := &http.Server{Handler: bridge.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -89,6 +83,16 @@ func run(port int, config live.Config) error {
 	}
 
 	return nil
+}
+
+// stopAndWait stops the bridge and waits, up to limit, for its run to end: a phone's stream removes its adb forward as
+// it ends, which the bridge lets happen before it exits, whether a signal or a failing server ends it.
+func stopAndWait(stop context.CancelFunc, ran <-chan struct{}, limit time.Duration) {
+	stop()
+	select {
+	case <-ran:
+	case <-time.After(limit):
+	}
 }
 
 // announcement is the one line the bridge writes to stdout, for the mod that started it.
