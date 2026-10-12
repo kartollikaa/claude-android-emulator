@@ -43,7 +43,7 @@ func (e *NotFoundError) Error() string {
 const (
 	// Longer than the emulator's own wait for its guest to shut down.
 	stopGrace = 30 * time.Second
-	// Set to the log path, it makes a run of this binary the emulator launcher.
+	// Set to the log path, it makes a run of this binary the launcher.
 	launcherLog = "ANDROID_BRIDGE_LAUNCHER_LOG"
 )
 
@@ -190,12 +190,19 @@ func describe(name, avdHome string) AVD {
 	return avd
 }
 
-// Boot starts the emulator for avd with its output in logPath, through a launcher that exits at once:
-// the emulator then belongs to no process tree of the bridge's, so whatever kills that tree spares it.
+// Boot starts the emulator for avd with its output in logPath, through a launcher that exits at once (see Detach).
 func (s SDK) Boot(avd string, grpcPort int, logPath string) (pid int, err error) {
 	if !avdName.MatchString(avd) {
 		return 0, errors.New("not an AVD name: " + avd)
 	}
+
+	return Detach([]string{s.Emulator(), "-avd", avd, "-qt-hide-window", "-gpu", "host",
+		"-grpc", fmt.Sprint(grpcPort), "-grpc-use-token"}, logPath)
+}
+
+// Detach runs argv with its output in logPath through a launcher, this binary, that exits at once:
+// the process then belongs to no process tree of the bridge's, so whatever kills that tree spares it.
+func Detach(argv []string, logPath string) (pid int, err error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return 0, err
 	}
@@ -203,24 +210,23 @@ func (s SDK) Boot(avd string, grpcPort int, logPath string) (pid int, err error)
 	if err != nil {
 		return 0, err
 	}
-	launcher := exec.Command(self, s.Emulator(), "-avd", avd, "-qt-hide-window", "-gpu", "host",
-		"-grpc", fmt.Sprint(grpcPort), "-grpc-use-token")
+	launcher := exec.Command(self, argv...)
 	launcher.Env = append(os.Environ(), launcherLog+"="+logPath)
 	var stderr strings.Builder
 	launcher.Stderr = &stderr
 	output, err := launcher.Output()
 	if err != nil {
-		return 0, fmt.Errorf("launching the emulator: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return 0, fmt.Errorf("launching %s: %w: %s", filepath.Base(argv[0]), err, strings.TrimSpace(stderr.String()))
 	}
 	pid, err = strconv.Atoi(strings.TrimSpace(string(output)))
 	if err != nil {
-		return 0, fmt.Errorf("the emulator launcher answered %q", output)
+		return 0, fmt.Errorf("the launcher answered %q", output)
 	}
 
 	return pid, nil
 }
 
-// RunLauncherIfAsked makes this process the launcher Boot starts: it starts the emulator, prints its pid and exits.
+// RunLauncherIfAsked makes this process the launcher Detach starts: it starts the process, prints its pid and exits.
 func RunLauncherIfAsked() {
 	logPath := os.Getenv(launcherLog)
 	if logPath == "" {
