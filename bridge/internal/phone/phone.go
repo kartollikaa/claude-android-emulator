@@ -417,8 +417,8 @@ func (p *Phone) Touch(ctx context.Context, x, y float64, isDown bool) error {
 	touch := scrcpy.Touch{
 		Action:  action,
 		Pointer: scrcpy.PointerFinger,
-		X:       toPixel(x, video.Width),
-		Y:       toPixel(y, video.Height),
+		X:       device.ToPixel(x, video.Width),
+		Y:       device.ToPixel(y, video.Height),
 		Width:   uint16(video.Width),
 		Height:  uint16(video.Height),
 	}
@@ -504,11 +504,6 @@ func (p *Phone) Booted(ctx context.Context) (bool, error) {
 
 func (p *Phone) Shutdown(context.Context) error { return device.ErrCannotShutDown }
 
-func toPixel(fraction float64, extent int) int32 {
-	clamped := math.Min(1, math.Max(0, fraction))
-
-	return int32(math.Round(clamped * float64(extent-1)))
-}
 
 // fitRGB scales picture down to size, averaging the source pixels under each one; a picture turned the other way
 // than size (the phone turned since) is fitted inside it instead, keeping its shape.

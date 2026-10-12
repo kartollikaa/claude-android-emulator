@@ -155,8 +155,8 @@ func (c *Conn) Touch(ctx context.Context, x, y float64, isDown bool) error {
 	}
 	panelX, panelY := toPanel(device.Rotation(c.rotation.Load()), x, y)
 	_, err := c.client.SendTouch(ctx, &pb.TouchEvent{Touches: []*pb.Touch{{
-		X:        toPixel(panelX, c.panel.Width),
-		Y:        toPixel(panelY, c.panel.Height),
+		X:        device.ToPixel(panelX, c.panel.Width),
+		Y:        device.ToPixel(panelY, c.panel.Height),
 		Pressure: pressure,
 	}}})
 
@@ -264,8 +264,3 @@ func (c *Conn) Text(ctx context.Context, text string) error {
 	return err
 }
 
-func toPixel(fraction float64, extent int) int32 {
-	clamped := math.Min(1, math.Max(0, fraction))
-
-	return int32(math.Round(clamped * float64(extent-1)))
-}

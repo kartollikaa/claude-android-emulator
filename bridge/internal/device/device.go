@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 )
 
@@ -101,4 +102,11 @@ func (r *Rotation) UnmarshalText(text []byte) error {
 	*r = Rotation(index)
 
 	return nil
+}
+
+// ToPixel turns a fraction of a side extent pixels long into a pixel on it, clamped to the side.
+func ToPixel(fraction float64, extent int) int32 {
+	clamped := math.Min(1, math.Max(0, fraction))
+
+	return int32(math.Round(clamped * float64(extent-1)))
 }
