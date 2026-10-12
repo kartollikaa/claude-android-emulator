@@ -2,7 +2,7 @@
 
 ## Goal
 
-An Android emulator or USB device, live and interactive, inside the Claude desktop app's Code
+An Android emulator or a connected device (USB or Wi-Fi), live and interactive, inside the Claude desktop app's Code
 tab, plus tools that let Claude see and drive it while it builds an app. The desktop app's
 built-in iOS Simulator panel is the reference experience.
 
@@ -143,17 +143,21 @@ One PR per item, each reviewed before the next starts.
    bridge's HTTP API.
 8. **Device seam**: the bridge drives a device interface instead of `*emulator.Conn`, the emulator
    its only implementation; no behaviour change.
-9. **USB devices**: a phone plugged in over USB shows in the live view and answers Claude's tool
-   (see USB devices below).
+9. **Connected devices**: a phone adb reaches over USB or Wi-Fi shows in the live view and answers
+   Claude's tool (see Connected devices below).
 10. **Release**: CI (validate, plugin tests, `tsc`, bridge tests and cross-compiled binaries),
    README, public repository.
 
 Later: one emulator or device per session, each bridge claiming its own.
 
-### USB devices
+### Connected devices
 
+- **Any transport adb has.** A phone plugged in over USB, one on wireless debugging (Android 11+,
+  paired once; adb reconnects it through mDNS) and one reached with `adb connect` all show the same
+  way: scrcpy runs over whatever transport adb uses. A phone listed twice (USB and Wi-Fi, the same
+  `ro.serialno`) counts once, over USB. Pairing a new phone over Wi-Fi is not covered yet.
 - **Which device shows.** A running emulator first, as today; with none, the first adb device in the
-  `device` state that is not an emulator. Starting an emulator from the page switches the view to
+  `device` state that is not a discovered emulator. Starting an emulator from the page switches the view to
   it; shutting it down falls back to the phone. A phone in the `unauthorized` state shows on the page
   with a hint to allow USB debugging on it.
 - **Video.** The bridge runs the pinned scrcpy server (video H.264, no audio, control on, long side
@@ -167,8 +171,9 @@ Later: one emulator or device per session, each bridge claiming its own.
   message only toggles.
 - **Everything else** runs over adb against the phone's serial, as for an emulator: screenshots
   (`screencap -p`, scaled and JPEG-encoded in the bridge for Claude), recordings, App info, links,
-  launching and installing apps, logs and the device settings. Shut down is an emulator's only: the
-  page hides it and the route refuses it for a phone; Power sleeps and wakes the phone.
+  launching and installing apps, logs and the device settings. A Wi-Fi serial (`host:port`, an mDNS
+  service name) is made safe before it names a capture file. Shut down is an emulator's
+  only: the page hides it and the route refuses it for a phone; Power sleeps and wakes the phone.
 
 ## Decisions
 
