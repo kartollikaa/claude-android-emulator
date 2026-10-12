@@ -76,10 +76,14 @@ type Phone struct {
 	mu      sync.Mutex
 	control net.Conn
 	video   device.Size
+	// sizeChanges counts the video's sizes, so an answer about an older one is dropped.
+	sizeChanges uint64
+	// readDisplayRotation is displayRotation, or a test's stand-in.
+	readDisplayRotation func(context.Context) (device.Rotation, error)
 	// sending keeps control messages whole and in order, and guards isPressed, without holding up the video.
 	sending   sync.Mutex
 	isPressed bool
-	// rotation is the display's as of the newest config packet.
+	// rotation is the display's for the newest video size: its shape's at once, the window manager's soon after.
 	rotation atomic.Int32
 	// Rotate reads the rotation before setting it, so two at once would turn the phone once.
 	rotating sync.Mutex
@@ -98,7 +102,10 @@ func Dial(ctx context.Context, listed adb.Listed, options Options) (*Phone, erro
 		return nil, fmt.Errorf("%s: %w", listed.Serial, err)
 	}
 
-	return &Phone{shell: shell, isWiFi: IsWiFi(listed), model: strings.TrimSpace(model), panel: panel, options: options}, nil
+	phone := &Phone{shell: shell, isWiFi: IsWiFi(listed), model: strings.TrimSpace(model), panel: panel, options: options}
+	phone.readDisplayRotation = phone.displayRotation
+
+	return phone, nil
 }
 
 // parseSize reads `wm size`: the override when one is set, since the display then draws at it, else the physical size.
@@ -229,10 +236,7 @@ func (p *Phone) readVideo(ctx context.Context, video net.Conn, onFrame func(devi
 			}
 			size := device.Size{Width: sps.Width, Height: sps.Height}
 			if size != p.videoSize() {
-				p.rotation.Store(int32(p.readRotation(ctx, size)))
-				p.mu.Lock()
-				p.video = size
-				p.mu.Unlock()
+				p.noteVideoSize(ctx, size)
 			}
 		}
 		seq++
@@ -312,18 +316,31 @@ func (p *Phone) videoSize() device.Size {
 	return p.video
 }
 
-// readRotation asks the window manager how the display is turned; a video that disagrees with it goes by its shape.
-func (p *Phone) readRotation(ctx context.Context, video device.Size) device.Rotation {
+// noteVideoSize takes a new video size and the rotation its shape tells at once, then asks the window manager in the
+// background which way the display is turned (a landscape video can be either), unless a newer size came meanwhile.
+func (p *Phone) noteVideoSize(ctx context.Context, video device.Size) {
 	isTurned := (video.Width > video.Height) != (p.panel.Width > p.panel.Height)
-	rotation, err := p.displayRotation(ctx)
-	if err == nil && (rotation&1 == 1) == isTurned {
-		return rotation
-	}
+	p.mu.Lock()
+	p.video = video
+	p.sizeChanges++
+	change := p.sizeChanges
 	if isTurned {
-		return device.Landscape
+		p.rotation.Store(int32(device.Landscape))
+	} else {
+		p.rotation.Store(int32(device.Portrait))
 	}
-
-	return device.Portrait
+	p.mu.Unlock()
+	go func() {
+		rotation, err := p.readDisplayRotation(ctx)
+		if err != nil || (rotation&1 == 1) != isTurned {
+			return
+		}
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.sizeChanges == change {
+			p.rotation.Store(int32(rotation))
+		}
+	}()
 }
 
 func (p *Phone) displayRotation(ctx context.Context) (device.Rotation, error) {
@@ -356,7 +373,7 @@ func (p *Phone) lockedRotation(ctx context.Context) (device.Rotation, error) {
 	return p.displayRotation(ctx)
 }
 
-// Rotation is the display's rotation as the newest config packet found it.
+// Rotation is the display's rotation for the newest video size.
 func (p *Phone) Rotation() device.Rotation { return device.Rotation(p.rotation.Load()) }
 
 func (p *Phone) Upright() device.Size {

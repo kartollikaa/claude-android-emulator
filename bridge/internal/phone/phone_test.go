@@ -1,9 +1,11 @@
 package phone
 
 import (
+	"context"
 	"image"
 	"image/color"
 	"testing"
+	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/adb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
@@ -142,5 +144,48 @@ func TestFitRGBKeepsTheShapeOfAPictureTurnedSince(t *testing.T) {
 	frame := fitRGB(picture, device.Size{Width: 4, Height: 8})
 	if frame.Width != 4 || frame.Height != 2 {
 		t.Errorf("a landscape picture in a portrait size scaled to %d×%d, want 4×2", frame.Width, frame.Height)
+	}
+}
+
+// slowRotation answers each display rotation asked for once the test releases it.
+func slowRotation(phone *Phone) chan<- device.Rotation {
+	answers := make(chan device.Rotation)
+	phone.readDisplayRotation = func(context.Context) (device.Rotation, error) { return <-answers, nil }
+	return answers
+}
+
+func TestRotationFollowsTheVideoAtOnceThenTheWindowManager(t *testing.T) {
+	phone := &Phone{panel: device.Size{Width: 8, Height: 16}}
+	answers := slowRotation(phone)
+
+	phone.noteVideoSize(context.Background(), device.Size{Width: 16, Height: 8})
+	if got := phone.Rotation(); got != device.Landscape {
+		t.Errorf("before the window manager answers: %v, want landscape from the video's shape", got)
+	}
+	answers <- device.ReverseLandscape
+	deadline := time.Now().Add(time.Second)
+	for phone.Rotation() != device.ReverseLandscape && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := phone.Rotation(); got != device.ReverseLandscape {
+		t.Errorf("after it answered: %v, want reverse-landscape", got)
+	}
+}
+
+func TestAnAnswerAboutAnOlderVideoSizeIsDropped(t *testing.T) {
+	phone := &Phone{panel: device.Size{Width: 8, Height: 16}}
+	answers := slowRotation(phone)
+
+	phone.noteVideoSize(context.Background(), device.Size{Width: 16, Height: 8})
+	phone.noteVideoSize(context.Background(), device.Size{Width: 8, Height: 16})
+	answers <- device.Landscape
+	answers <- device.Landscape
+	time.Sleep(50 * time.Millisecond)
+
+	if got := phone.Rotation(); got != device.Portrait {
+		t.Errorf("rotation %v after a landscape answer about the turned video came last, want the portrait video's", got)
+	}
+	if got := phone.videoSize(); got != (device.Size{Width: 8, Height: 16}) {
+		t.Errorf("video size %+v, want the newest", got)
 	}
 }

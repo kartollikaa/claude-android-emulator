@@ -199,6 +199,14 @@ func phoneBridge(t *testing.T, devices string, options ...func(*Config)) *phoneH
 }
 
 // streaming waits for the bridge to start the server, then sends a config packet and a key frame.
+// serverCalls waits for the scrcpy server's adb shell to have logged its call, which races the connection it serves.
+func (p *phoneHarness) serverCalls(t *testing.T) string {
+	t.Helper()
+	isLogged := func() bool { return strings.Contains(strings.Join(adbCalls(p.tools), "\n"), " app_process ") }
+	eventually(t, isLogged, "the scrcpy server's adb shell")
+	return strings.Join(adbCalls(p.tools), "\n")
+}
+
 func (p *phoneHarness) streaming(t *testing.T) net.Conn {
 	t.Helper()
 	video := p.scrcpy.nextVideo(t)
@@ -245,7 +253,7 @@ func TestPhoneShowsWhenNoEmulatorRuns(t *testing.T) {
 		state.AVD != "" || state.WiFi || state.Device != deviceSize() || state.Rotation != device.Portrait {
 		t.Fatalf("status %+v, want the booted Pixel 9a over USB, its 8×16 panel upright", state)
 	}
-	calls := strings.Join(adbCalls(p.tools), "\n")
+	calls := p.serverCalls(t)
 	scid := regexp.MustCompile(`forward tcp:0 localabstract:scrcpy_([0-9a-f]{8})`).FindStringSubmatch(calls)
 	if scid == nil {
 		t.Fatalf("no forward to a scrcpy socket in the calls:\n%s", calls)
@@ -272,7 +280,7 @@ func TestPhoneOverWiFiStreamsAtALowerBitRate(t *testing.T) {
 	if state := p.status(t); !state.WiFi || state.Serial != "192.168.1.20:5555" {
 		t.Errorf("status %+v, want the phone over Wi-Fi", state)
 	}
-	if calls := strings.Join(adbCalls(p.tools), "\n"); !strings.Contains(calls, " video_bit_rate=4000000") {
+	if calls := p.serverCalls(t); !strings.Contains(calls, " video_bit_rate=4000000") {
 		t.Errorf("the server over Wi-Fi was not given a lower bit rate:\n%s", calls)
 	}
 	status, answer := control(t, p.harness, "/screenshot", `{}`)
@@ -415,9 +423,16 @@ func TestPhoneRotationFollowsTheVideo(t *testing.T) {
 	// A Baseline SPS of a 1208×536 video, then a PPS.
 	turned, _ := hex.DecodeString("000000016742001fda0130117965400000000168ce3c80")
 	sendPacket(t, video, true, false, turned)
-	state := p.waitFor(t, func(state State) bool { return state.Stream.Width > state.Stream.Height })
-	if state.Rotation != device.ReverseLandscape {
-		t.Errorf("after the video turned: rotation %v, stream %+v, want reverse-landscape", state.Rotation, state.Stream)
+	sendPacket(t, video, false, true, []byte("turned key frame"))
+	// The window manager's answer comes in the background and shows with the packets after it.
+	var state State
+	eventually(t, func() bool {
+		sendPacket(t, video, false, false, []byte("frame"))
+		state = p.status(t)
+		return state.Rotation == device.ReverseLandscape
+	}, "the rotation the window manager names")
+	if state.Stream != (device.Size{Width: 1208, Height: 536}) {
+		t.Errorf("stream %+v after the turn, want 1208×536", state.Stream)
 	}
 
 	before := len(p.scrcpy.received())
