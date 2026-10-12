@@ -45,6 +45,15 @@ export function liveViewFrom(line: string): string | null {
   }
 }
 
+export const DEFAULT_IDLE_MINUTES = 15
+
+/** The bridge's arguments: a free port, and the idle shutdown in whole seconds, the default for a value that is no count of minutes. */
+export function bridgeArgs(idleMinutes: unknown): string[] {
+  const minutes = typeof idleMinutes === 'number' && Number.isFinite(idleMinutes) && idleMinutes >= 0 ? idleMinutes : DEFAULT_IDLE_MINUTES
+
+  return ['-port', '0', '-idle-shutdown', `${Math.round(minutes * 60)}s`]
+}
+
 export function openPrompt(url: string): string {
   return (
     `Open the Android emulator's live view, ${url}, in your built-in browser pane, not in Chrome. ` +

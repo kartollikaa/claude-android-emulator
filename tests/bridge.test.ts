@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { liveViewFrom, releaseBinary, unixPlatform, windowsPlatform } from '../hooks/bridge'
+import { bridgeArgs, liveViewFrom, releaseBinary, unixPlatform, windowsPlatform } from '../hooks/bridge'
 
 test('uname names the platforms a bridge is built for', () => {
   expect(unixPlatform('Darwin arm64\n')).toEqual({ goos: 'darwin', goarch: 'arm64' })
@@ -31,4 +31,13 @@ test('only the announcement of a loopback live view counts', () => {
   expect(liveViewFrom('{"url":"http://127.0.0.1:52833"}')).toBe(null)
   expect(liveViewFrom('time=1 level=INFO msg="live view ready"')).toBe(null)
   expect(liveViewFrom('null')).toBe(null)
+})
+
+test('the idle shutdown reaches the bridge in whole seconds, the default for anything but a count of minutes', () => {
+  expect(bridgeArgs(15)).toEqual(['-port', '0', '-idle-shutdown', '900s'])
+  expect(bridgeArgs(0)).toEqual(['-port', '0', '-idle-shutdown', '0s'])
+  expect(bridgeArgs(0.25)).toEqual(['-port', '0', '-idle-shutdown', '15s'])
+  for (const odd of [-1, Number.NaN, Number.POSITIVE_INFINITY, '5', undefined]) {
+    expect(bridgeArgs(odd)).toEqual(['-port', '0', '-idle-shutdown', '900s'])
+  }
 })

@@ -29,7 +29,7 @@ for (const { host, binary } of PLATFORMS) {
 
     const checked = seen.checked.find(binaryFor(binary))
     expect(checked).toBeDefined()
-    expect(seen.spawned).toEqual([[checked, '-port', '0']])
+    expect(seen.spawned).toEqual([[checked, '-port', '0', '-idle-shutdown', '900s']])
     seen.stopBridges()
   })
 }
@@ -43,7 +43,25 @@ test('builds the bridge in a checkout', async ($, on) => {
   const build = seen.ran.find(run => run.argv[1] === 'build')
   expect(build?.argv).toEqual(['go', 'build', '-o', built, './cmd/android-bridge'])
   expect(build?.cwd?.endsWith('/bridge')).toBe(true)
-  expect(seen.spawned).toEqual([[built, '-port', '0']])
+  expect(seen.spawned).toEqual([[built, '-port', '0', '-idle-shutdown', '900s']])
+  seen.stopBridges()
+})
+
+test('passes the configured idle shutdown to the bridge', { options: { idleShutdownMinutes: 1.5 } }, async ($, on) => {
+  const seen = fakeHost(on, { ...MAC, exists: binaryFor('android-bridge-darwin-arm64') })
+
+  await emulator($)
+
+  expect(seen.spawned[0]?.slice(1)).toEqual(['-port', '0', '-idle-shutdown', '90s'])
+  seen.stopBridges()
+})
+
+test('an idle shutdown of 0 reaches the bridge as off', { options: { idleShutdownMinutes: 0 } }, async ($, on) => {
+  const seen = fakeHost(on, { ...MAC, exists: binaryFor('android-bridge-darwin-arm64') })
+
+  await emulator($)
+
+  expect(seen.spawned[0]?.slice(1)).toEqual(['-port', '0', '-idle-shutdown', '0s'])
   seen.stopBridges()
 })
 

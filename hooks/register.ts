@@ -1,6 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 
 import {
+  bridgeArgs,
   executable,
   lastLines,
   liveViewFrom,
@@ -23,8 +24,10 @@ type Found = { binary: string } | { problem: string }
 
 let liveView: string | null = null
 let starting: Promise<Started> | null = null
+let idleMinutes: unknown
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  idleMinutes = options.idleShutdownMinutes
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.command.register({
@@ -145,7 +148,7 @@ function runBridge($: EngineInterface, binary: string): Promise<Started> {
     let stdout = ''
     let stderr = ''
     let announced: string | null = null
-    const bridge = $.process.spawn({ argv: [binary, '-port', '0'] })
+    const bridge = $.process.spawn({ argv: [binary, ...bridgeArgs(idleMinutes)] })
     const silence = $.clock.after(ANNOUNCE_MS, () => {
       resolve({
         problem: `The Android bridge did not announce its live view within ${ANNOUNCE_MS / 1000} s and was stopped.\n${lastLines(stderr, 10)}`,
