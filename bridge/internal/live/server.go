@@ -16,7 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
@@ -380,7 +380,7 @@ func (b *Bridge) writeFrames(ctx context.Context, socket *websocket.Conn) error 
 	changes, stop := b.watch()
 	defer stop()
 	var sentState *State
-	var sentFrame *emulator.Frame
+	var sentFrame *device.Frame
 	for {
 		select {
 		case <-ctx.Done():
@@ -410,7 +410,7 @@ func (b *Bridge) writeFrames(ctx context.Context, socket *websocket.Conn) error 
 	}
 }
 
-func writeFrame(ctx context.Context, socket *websocket.Conn, frame *emulator.Frame) error {
+func writeFrame(ctx context.Context, socket *websocket.Conn, frame *device.Frame) error {
 	writer, err := socket.Writer(ctx, websocket.MessageBinary)
 	if err != nil {
 		return err

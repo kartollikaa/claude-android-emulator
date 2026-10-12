@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -18,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 )
@@ -27,50 +27,15 @@ const maxFrameBytes = 64 << 20
 
 const dialTimeout = 5 * time.Second
 
-type Size struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
-}
+var _ device.Device = (*Conn)(nil)
 
-// Frame is one screen image: RGB888, rows top-down, drawn upright for the device's rotation; 0×0 means the display is off.
-type Frame struct {
-	Seq      uint32
-	Width    int
-	Height   int
-	Rotation Rotation
-	RGB      []byte
-}
-
-// Rotation is how far the device is turned counter-clockwise from its natural portrait, in quarter turns.
-type Rotation int32
-
-const (
-	Portrait Rotation = iota
-	Landscape
-	ReversePortrait
-	ReverseLandscape
-)
-
-var rotationNames = [...]string{"portrait", "landscape", "reverse-portrait", "reverse-landscape"}
-
-func (r Rotation) MarshalText() ([]byte, error) { return []byte(rotationNames[r&3]), nil }
-
-func (r *Rotation) UnmarshalText(text []byte) error {
-	index := slices.Index(rotationNames[:], string(text))
-	if index < 0 {
-		return fmt.Errorf("unknown rotation %q", text)
-	}
-	*r = Rotation(index)
-
-	return nil
-}
-
+// Conn is a device.Device for one running emulator.
 type Conn struct {
-	Emulator discovery.Emulator
-	Device   Size
-	conn     *grpc.ClientConn
-	client   pb.EmulatorControllerClient
-	logger   *slog.Logger
+	discovered discovery.Emulator
+	panel      device.Size
+	conn       *grpc.ClientConn
+	client     pb.EmulatorControllerClient
+	logger     *slog.Logger
 	// The rotation of the newest frame; touches arrive in its coordinates.
 	rotation atomic.Int32
 	// Rotate reads the sensor before setting it, so two at once would turn the device once.
@@ -108,19 +73,25 @@ func Dial(ctx context.Context, emulator discovery.Emulator, logger *slog.Logger)
 		conn.Close()
 		return nil, fmt.Errorf("emulator on gRPC port %d: %w", emulator.GRPCPort, err)
 	}
-	device := panelSize(emulatorStatus)
-	if device.Width <= 0 || device.Height <= 0 {
+	panel := panelSize(emulatorStatus)
+	if panel.Width <= 0 || panel.Height <= 0 {
 		conn.Close()
 		return nil, fmt.Errorf("emulator on gRPC port %d reported no panel size", emulator.GRPCPort)
 	}
 
-	return &Conn{Emulator: emulator, Device: device, conn: conn, client: client, logger: logger}, nil
+	return &Conn{discovered: emulator, panel: panel, conn: conn, client: client, logger: logger}, nil
 }
+
+func (c *Conn) Serial() string { return c.discovered.Serial }
+
+func (c *Conn) Name() string { return c.discovered.AVD }
+
+func (c *Conn) Panel() device.Size { return c.panel }
 
 func (c *Conn) Close() error { return c.conn.Close() }
 
 // panelSize is the hardware config's hw.lcd size: the portrait panel whatever the rotation, known before the display is up.
-func panelSize(emulatorStatus *pb.EmulatorStatus) Size {
+func panelSize(emulatorStatus *pb.EmulatorStatus) device.Size {
 	config := emulatorStatus.GetPlatformConfig()
 	if len(config) == 0 {
 		config = map[string]string{}
@@ -131,19 +102,19 @@ func panelSize(emulatorStatus *pb.EmulatorStatus) Size {
 	width, _ := strconv.Atoi(config["hw.lcd.width"])
 	height, _ := strconv.Atoi(config["hw.lcd.height"])
 
-	return Size{Width: width, Height: height}
+	return device.Size{Width: width, Height: height}
 }
 
-// StreamBox is the square that frames streamed with a short side of width fit in, upright or on their side.
-func (c *Conn) StreamBox(width int) Size {
-	short, long := min(c.Device.Width, c.Device.Height), max(c.Device.Width, c.Device.Height)
+// streamBox is the square that frames streamed with a short side of width fit in, upright or on their side.
+func (c *Conn) streamBox(width int) device.Size {
+	short, long := min(c.panel.Width, c.panel.Height), max(c.panel.Width, c.panel.Height)
 	side := int(math.Round(float64(min(width, short)) * float64(long) / float64(short)))
 
-	return Size{Width: side, Height: side}
+	return device.Size{Width: side, Height: side}
 }
 
-// Stream calls onFrame for each new screen image until ctx ends or the emulator goes away.
-func (c *Conn) Stream(ctx context.Context, size Size, onFrame func(Frame)) error {
+func (c *Conn) Stream(ctx context.Context, streamWidth int, onFrame func(device.Frame)) error {
+	size := c.streamBox(streamWidth)
 	frames, err := c.client.StreamScreenshot(ctx, &pb.ImageFormat{
 		Format: pb.ImageFormat_RGB888,
 		Width:  uint32(size.Width),
@@ -166,24 +137,24 @@ func (c *Conn) Stream(ctx context.Context, size Size, onFrame func(Frame)) error
 			}
 			continue
 		}
-		rotation := Rotation(image.GetFormat().GetRotation().GetRotation())
+		rotation := device.Rotation(image.GetFormat().GetRotation().GetRotation())
 		if width > 0 && height > 0 {
 			c.rotation.Store(int32(rotation))
 		}
-		onFrame(Frame{Seq: image.GetSeq(), Width: width, Height: height, Rotation: rotation, RGB: image.GetImage()})
+		onFrame(device.Frame{Seq: image.GetSeq(), Width: width, Height: height, Rotation: rotation, RGB: image.GetImage()})
 	}
 }
 
-// Touch presses (isDown) or releases one finger at a point given as fractions of the screen as the newest frame shows it.
+// Touch goes to the panel pixel under the point as the newest frame shows it.
 func (c *Conn) Touch(ctx context.Context, x, y float64, isDown bool) error {
 	pressure := int32(0)
 	if isDown {
 		pressure = 1
 	}
-	panelX, panelY := Rotation(c.rotation.Load()).toPanel(x, y)
+	panelX, panelY := toPanel(device.Rotation(c.rotation.Load()), x, y)
 	_, err := c.client.SendTouch(ctx, &pb.TouchEvent{Touches: []*pb.Touch{{
-		X:        toPixel(panelX, c.Device.Width),
-		Y:        toPixel(panelY, c.Device.Height),
+		X:        toPixel(panelX, c.panel.Width),
+		Y:        toPixel(panelY, c.panel.Height),
 		Pressure: pressure,
 	}}})
 
@@ -191,20 +162,20 @@ func (c *Conn) Touch(ctx context.Context, x, y float64, isDown bool) error {
 }
 
 // toPanel turns fractions of the upright picture into fractions of the natural panel, which the touchscreen reports in.
-func (r Rotation) toPanel(x, y float64) (float64, float64) {
+func toPanel(r device.Rotation, x, y float64) (float64, float64) {
 	switch r & 3 {
-	case Landscape:
+	case device.Landscape:
 		return 1 - y, x
-	case ReversePortrait:
+	case device.ReversePortrait:
 		return 1 - x, 1 - y
-	case ReverseLandscape:
+	case device.ReverseLandscape:
 		return y, 1 - x
 	}
 
 	return x, y
 }
 
-// Rotate turns the device quarters of a turn, counter-clockwise for a positive count, keeping its tilt.
+// Rotate turns the virtual sensor, keeping its tilt.
 func (c *Conn) Rotate(ctx context.Context, quarters int) error {
 	c.rotating.Lock()
 	defer c.rotating.Unlock()
@@ -224,7 +195,7 @@ func (c *Conn) Rotate(ctx context.Context, quarters int) error {
 	return err
 }
 
-// Screenshot returns the screen as the emulator encodes it: a PNG at the device's full resolution.
+// Screenshot returns the PNG the emulator encodes.
 func (c *Conn) Screenshot(ctx context.Context) ([]byte, error) {
 	image, err := c.client.GetScreenshot(ctx, &pb.ImageFormat{Format: pb.ImageFormat_PNG})
 	if err != nil {
@@ -234,33 +205,31 @@ func (c *Conn) Screenshot(ctx context.Context) ([]byte, error) {
 	return image.GetImage(), nil
 }
 
-// ScreenshotAt returns the screen upright as RGB888 pixels the emulator scaled to fit size.
-func (c *Conn) ScreenshotAt(ctx context.Context, size Size) (Frame, error) {
+// ScreenshotAt has the emulator scale the screen.
+func (c *Conn) ScreenshotAt(ctx context.Context, size device.Size) (device.Frame, error) {
 	image, err := c.client.GetScreenshot(ctx, &pb.ImageFormat{Format: pb.ImageFormat_RGB888, Width: uint32(size.Width), Height: uint32(size.Height)})
 	if err != nil {
-		return Frame{}, err
+		return device.Frame{}, err
 	}
 	width, height := int(image.GetFormat().GetWidth()), int(image.GetFormat().GetHeight())
 	if width <= 0 || height <= 0 || len(image.GetImage()) != width*height*3 {
-		return Frame{}, fmt.Errorf("the emulator answered a %d×%d screenshot of %d bytes, not RGB888", width, height, len(image.GetImage()))
+		return device.Frame{}, fmt.Errorf("the emulator answered a %d×%d screenshot of %d bytes, not RGB888", width, height, len(image.GetImage()))
 	}
 
-	return Frame{Seq: image.GetSeq(), Width: width, Height: height, Rotation: c.Rotation(), RGB: image.GetImage()}, nil
+	return device.Frame{Seq: image.GetSeq(), Width: width, Height: height, Rotation: c.Rotation(), RGB: image.GetImage()}, nil
 }
 
-// Upright is the screen's size as the newest frame shows it: the panel, turned with the device.
-func (c *Conn) Upright() Size {
-	if Rotation(c.rotation.Load())&1 == 1 {
-		return Size{Width: c.Device.Height, Height: c.Device.Width}
+func (c *Conn) Upright() device.Size {
+	if c.Rotation()&1 == 1 {
+		return device.Size{Width: c.panel.Height, Height: c.panel.Width}
 	}
 
-	return c.Device
+	return c.panel
 }
 
 // Rotation is the device's rotation as the newest frame shows it.
-func (c *Conn) Rotation() Rotation { return Rotation(c.rotation.Load()) }
+func (c *Conn) Rotation() device.Rotation { return device.Rotation(c.rotation.Load()) }
 
-// Key presses and releases a named key (GoHome, GoBack, AppSwitch, Enter, Backspace, ...).
 func (c *Conn) Key(ctx context.Context, key string) error {
 	_, err := c.client.SendKey(ctx, &pb.KeyboardEvent{EventType: pb.KeyboardEvent_keypress, Key: key})
 
@@ -274,7 +243,7 @@ func (c *Conn) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Booted reports whether the device finished booting; an emulator too old to say counts as booted.
+// Booted counts an emulator too old to say as booted.
 func (c *Conn) Booted(ctx context.Context) (bool, error) {
 	emulatorStatus, err := c.client.GetStatus(ctx, &emptypb.Empty{})
 	if status.Code(err) == codes.Unimplemented {

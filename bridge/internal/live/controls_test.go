@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	pb "github.com/kartollikaa/claude-android-emulator/bridge/internal/emulatorpb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 )
@@ -197,12 +197,12 @@ func TestTouchFollowsTheRotationOfTheFrames(t *testing.T) {
 	fake, frames := h.connected(t, testContext(t), "")
 
 	frames <- fakeemulator.Turned(fakeemulator.Frame(1, streamHeight, streamWidth, 0), pb.Rotation_LANDSCAPE)
-	h.waitFor(t, func(state State) bool { return state.Rotation == emulator.Landscape })
+	h.waitFor(t, func(state State) bool { return state.Rotation == device.Landscape })
 	if status := postInput(t, h, "application/json", `{"type":"touch","phase":"down","x":0.25,"y":0.75}`); status != http.StatusNoContent {
 		t.Fatalf("touch answered %d", status)
 	}
 	frames <- fakeemulator.Frame(2, streamWidth, streamHeight, 0)
-	h.waitFor(t, func(state State) bool { return state.Rotation == emulator.Portrait })
+	h.waitFor(t, func(state State) bool { return state.Rotation == device.Portrait })
 	if status := postInput(t, h, "application/json", `{"type":"touch","phase":"down","x":0.25,"y":0.75}`); status != http.StatusNoContent {
 		t.Fatalf("touch answered %d", status)
 	}

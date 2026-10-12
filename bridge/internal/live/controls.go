@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/adb"
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
@@ -37,7 +37,7 @@ var (
 )
 
 type recording struct {
-	device     adb.Device
+	shell      adb.Device
 	devicePath string
 	// pid is screenrecord's on the device, known once started closes; empty if it never ran.
 	pid     string
@@ -80,7 +80,7 @@ func (b *Bridge) Screenshot(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	file, err := b.newCapture("Screenshot", conn.Emulator.Serial, ".png")
+	file, err := b.newCapture("Screenshot", conn.Serial(), ".png")
 	if err != nil {
 		return "", err
 	}
@@ -99,7 +99,7 @@ func (b *Bridge) Screenshot(ctx context.Context) (string, error) {
 
 // StartRecording starts the device's screenrecord; the recording is saved when it stops, whoever stops it.
 func (b *Bridge) StartRecording(ctx context.Context) error {
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func (b *Bridge) StartRecording(ctx context.Context) error {
 		return ErrRecording
 	}
 	current := &recording{
-		device:     device,
+		shell:      shell,
 		devicePath: fmt.Sprintf("/sdcard/claude-recording-%d.mp4", b.config.Now().UnixNano()),
 		started:    make(chan struct{}),
 		done:       make(chan struct{}),
@@ -119,7 +119,7 @@ func (b *Bridge) StartRecording(ctx context.Context) error {
 	b.state.RecordingError = ""
 	b.mu.Unlock()
 	// The shell prints its pid and becomes screenrecord, so a stop interrupts this recording and no other.
-	recorder := device.Command("shell", "echo $$; exec screenrecord "+current.devicePath)
+	recorder := shell.Command("shell", "echo $$; exec screenrecord "+current.devicePath)
 	var stderr strings.Builder
 	recorder.Stderr = &stderr
 	pid, err := startRecorder(ctx, recorder)
@@ -181,7 +181,7 @@ func (b *Bridge) StopRecording(ctx context.Context) (string, error) {
 	if current.pid != "" {
 		// screenrecord finishes the MP4 on SIGINT, as on Ctrl-C; one already gone ended by itself and is being saved.
 		interrupt := fmt.Sprintf("kill -INT %[1]s 2>/dev/null || ! kill -0 %[1]s 2>/dev/null", current.pid)
-		if _, err := current.device.Run(ctx, "shell", interrupt); err != nil {
+		if _, err := current.shell.Run(ctx, "shell", interrupt); err != nil {
 			return "", err
 		}
 	}
@@ -197,8 +197,8 @@ func (b *Bridge) saveRecording(recorder *exec.Cmd, stderr *strings.Builder, curr
 	recordErr := recorder.Wait()
 	ctx, cancel := context.WithTimeout(context.Background(), recordingSaveTimeout)
 	defer cancel()
-	path, err := b.pullCapture(ctx, current.device, current.devicePath)
-	current.device.Run(ctx, "shell", "rm", "-f", current.devicePath)
+	path, err := b.pullCapture(ctx, current.shell, current.devicePath)
+	current.shell.Run(ctx, "shell", "rm", "-f", current.devicePath)
 	if err != nil && recordErr != nil {
 		err = fmt.Errorf("screenrecord failed: %w: %s", recordErr, strings.TrimSpace(stderr.String()))
 	}
@@ -208,13 +208,13 @@ func (b *Bridge) saveRecording(recorder *exec.Cmd, stderr *strings.Builder, curr
 	b.endRecording(current, path, err)
 }
 
-func (b *Bridge) pullCapture(ctx context.Context, device adb.Device, devicePath string) (string, error) {
-	file, err := b.newCapture("Screen_recording", device.Serial, ".mp4")
+func (b *Bridge) pullCapture(ctx context.Context, shell adb.Device, devicePath string) (string, error) {
+	file, err := b.newCapture("Screen_recording", shell.Serial, ".mp4")
 	if err != nil {
 		return "", err
 	}
 	file.Close()
-	if _, err := device.Run(ctx, "pull", devicePath, file.Name()); err != nil {
+	if _, err := shell.Run(ctx, "pull", devicePath, file.Name()); err != nil {
 		os.Remove(file.Name())
 		return "", err
 	}
@@ -241,16 +241,16 @@ func (b *Bridge) endRecording(current *recording, path string, err error) {
 
 // OpenAppSettings opens the system App info screen of the app in front.
 func (b *Bridge) OpenAppSettings(ctx context.Context) error {
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return err
 	}
-	activities, err := device.Run(ctx, "shell", "dumpsys", "activity", "activities")
+	activities, err := shell.Run(ctx, "shell", "dumpsys", "activity", "activities")
 	if err != nil {
 		return err
 	}
 	front := adb.ForegroundPackage(activities)
-	home, err := device.Run(ctx, "shell", "cmd", "package", "resolve-activity", "--brief",
+	home, err := shell.Run(ctx, "shell", "cmd", "package", "resolve-activity", "--brief",
 		"-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME")
 	if err != nil {
 		return err
@@ -258,12 +258,12 @@ func (b *Bridge) OpenAppSettings(ctx context.Context) error {
 	if front == "" || front == adb.ResolvedPackage(home) {
 		return ErrHomeInFront
 	}
-	_, err = device.Run(ctx, "shell", "am", "start", "-a", "android.settings.APPLICATION_DETAILS_SETTINGS", "-d", "package:"+front)
+	_, err = shell.Run(ctx, "shell", "am", "start", "-a", "android.settings.APPLICATION_DETAILS_SETTINGS", "-d", "package:"+front)
 
 	return err
 }
 
-func (b *Bridge) connection() *emulator.Conn {
+func (b *Bridge) connection() device.Device {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -277,7 +277,7 @@ func (b *Bridge) adbDevice() (adb.Device, error) {
 	}
 	if found, err := sdk.Find(b.config.SDKCandidates, runtime.GOOS); err == nil {
 		if _, err := os.Stat(found.ADB()); err == nil {
-			return adb.Device{Path: found.ADB(), Serial: conn.Emulator.Serial}, nil
+			return adb.Device{Path: found.ADB(), Serial: conn.Serial()}, nil
 		}
 	}
 	path, err := exec.LookPath("adb")
@@ -285,7 +285,7 @@ func (b *Bridge) adbDevice() (adb.Device, error) {
 		return adb.Device{}, ErrNoADB
 	}
 
-	return adb.Device{Path: path, Serial: conn.Emulator.Serial}, nil
+	return adb.Device{Path: path, Serial: conn.Serial()}, nil
 }
 
 // newCapture creates <kind>_<serial>_<yyyyMMdd-HHmmss>.<ext> in the captures directory, numbering a name already taken.

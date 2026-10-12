@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/adb"
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
@@ -49,10 +49,10 @@ var (
 
 // Screen is a screenshot for Claude: a base64 JPEG small enough to read whole, in whose pixels taps and swipes are given.
 type Screen struct {
-	JPEG     string            `json:"jpeg"`
-	Width    int               `json:"width"`
-	Height   int               `json:"height"`
-	Rotation emulator.Rotation `json:"rotation"`
+	JPEG     string          `json:"jpeg"`
+	Width    int             `json:"width"`
+	Height   int             `json:"height"`
+	Rotation device.Rotation `json:"rotation"`
 }
 
 // Gesture is a tap, a long press or a swipe in a Screen's pixels; a tap has no end.
@@ -72,9 +72,9 @@ type LaunchRequest struct {
 }
 
 // screenSize is the size Screen draws the upright screen at, never larger than the device.
-func screenSize(upright emulator.Size) emulator.Size {
+func screenSize(upright device.Size) device.Size {
 	scale := min(1, float64(screenLongSide)/float64(max(upright.Width, upright.Height)))
-	return emulator.Size{
+	return device.Size{
 		Width:  int(math.Round(float64(upright.Width) * scale)),
 		Height: int(math.Round(float64(upright.Height) * scale)),
 	}
@@ -177,11 +177,11 @@ func (b *Bridge) OpenURL(ctx context.Context, link string) error {
 	if err != nil || parsed.Scheme == "" {
 		return fmt.Errorf("%w: %q is not a URL with a scheme", ErrBadInput, link)
 	}
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return err
 	}
-	_, err = device.Run(ctx, "shell", "am start -W -a android.intent.action.VIEW -d "+adb.Quote(link))
+	_, err = shell.Run(ctx, "shell", "am start -W -a android.intent.action.VIEW -d "+adb.Quote(link))
 
 	return err
 }
@@ -194,7 +194,7 @@ func (b *Bridge) LaunchApp(ctx context.Context, request LaunchRequest) (string, 
 	if request.Package == "" && request.APK == "" {
 		return "", fmt.Errorf("%w: name a package, an apk, or both", ErrBadInput)
 	}
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return "", err
 	}
@@ -211,11 +211,11 @@ func (b *Bridge) LaunchApp(ctx context.Context, request LaunchRequest) (string, 
 				return "", err
 			}
 		}
-		if _, err := device.Run(ctx, "install", "-r", "-t", request.APK); err != nil {
+		if _, err := shell.Run(ctx, "install", "-r", "-t", request.APK); err != nil {
 			return "", err
 		}
 	}
-	resolved, err := device.Run(ctx, "shell", "cmd", "package", "resolve-activity", "--brief",
+	resolved, err := shell.Run(ctx, "shell", "cmd", "package", "resolve-activity", "--brief",
 		"-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", name)
 	if err != nil {
 		return "", err
@@ -224,7 +224,7 @@ func (b *Bridge) LaunchApp(ctx context.Context, request LaunchRequest) (string, 
 	if component == "" {
 		return "", fmt.Errorf("%w: %s", ErrNoLauncherActivity, name)
 	}
-	if _, err := device.Run(ctx, "shell", "am start -W -n "+adb.Quote(component)); err != nil {
+	if _, err := shell.Run(ctx, "shell", "am start -W -n "+adb.Quote(component)); err != nil {
 		return "", err
 	}
 
@@ -261,20 +261,20 @@ func (b *Bridge) Logs(ctx context.Context, name string, lines int) (string, erro
 	if name != "" && !adb.IsPackageName(name) {
 		return "", fmt.Errorf("%w: %q is not an application id", ErrBadInput, name)
 	}
-	device, err := b.adbDevice()
+	shell, err := b.adbDevice()
 	if err != nil {
 		return "", err
 	}
 	args := []string{"logcat", "-d", "-t", strconv.Itoa(lines)}
 	if name != "" {
-		pid, _ := device.Run(ctx, "shell", "pidof -s "+name+"; true")
+		pid, _ := shell.Run(ctx, "shell", "pidof -s "+name+"; true")
 		if _, err := strconv.Atoi(strings.TrimSpace(pid)); err != nil {
 			return "", fmt.Errorf("%w: %s", ErrNotRunning, name)
 		}
 		args = append(args, "--pid="+strings.TrimSpace(pid))
 	}
 
-	return device.Run(ctx, args...)
+	return shell.Run(ctx, args...)
 }
 
 // WaitBooted answers the state once the emulator has booted, its launch failed, nothing is starting, or ctx ends.
