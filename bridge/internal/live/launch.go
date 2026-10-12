@@ -92,6 +92,11 @@ func (b *Bridge) Start(ctx context.Context, avd string) error {
 		return err
 	}
 	b.config.Logger.Info("emulator starting", "avd", avd, "pid", pid, "log", logPath)
+	if b.config.IdleShutdown > 0 && b.config.WatchIdle != nil {
+		if err := b.config.WatchIdle(avd, pid); err != nil {
+			b.config.Logger.Warn("cannot watch the emulator for idleness", "avd", avd, "err", err)
+		}
+	}
 	go b.awaitExit(id, pid, avd, logPath)
 	time.AfterFunc(b.config.LaunchTimeout, func() { b.giveUp(id, pid, avd, logPath) })
 

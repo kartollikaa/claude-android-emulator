@@ -52,7 +52,10 @@ The toolbar above the screen:
   the theme, font and display size to their defaults and leaves the language as it is.
 
 The emulator keeps running when the session ends, as Android Studio's does; the next `/emulator`
-shows it again.
+shows it again. One that no Claude session has shown for the idle time set in the mod's setting
+**Shut down an unused emulator after (minutes)** (in `/config`) shuts itself down, as Shut down does;
+0 turns that off. Only an emulator started from the live
+view or by Claude shuts down this way; one Android Studio started, and a phone, are left alone.
 
 ### A phone instead of an emulator
 
@@ -115,7 +118,8 @@ streams its screen to the live view page on `127.0.0.1`, and sends clicks, drags
 `/emulator` runs `bin/android-bridge-<os>-<arch>` (`.exe` on Windows) when the plugin has one for
 the platform. Releases ship those binaries, cross-compiled by CI and kept out of `main`'s history.
 In a checkout without them, `/emulator` builds `bridge/` with Go into
-`$TMPDIR/claude-android-emulator/android-bridge-dev`. The mod starts it with `-port 0`, and the
+`$TMPDIR/claude-android-emulator/android-bridge-dev`. The mod starts it with `-port 0` and the
+`idleShutdownMinutes` setting as `-idle-shutdown`, and the
 bridge answers with one line on stdout, `{"liveView":"http://127.0.0.1:<port>"}`; its logs go to
 stderr. It stops with the session and exits by itself if the process that started it is gone.
 
@@ -132,6 +136,17 @@ tree: Claude Code kills a mod's child together with everything descending from i
 logs to `$TMPDIR/claude-android-emulator/emulator-<avd>.log`; one that never comes up is stopped
 and reported. An emulator already running with gRPC is picked up as it is, and the bridge
 reconnects when one restarts.
+
+An emulator the bridge boots gets an idle watcher: the same launcher starts the bridge's binary again
+with `-watch-emulator <avd>`, detached, so it outlives the session too, logging to
+`$TMPDIR/claude-android-emulator/watch-<avd>.log`. While a bridge shows an emulator it keeps a presence
+mark, `presence/<avd>.<bridge pid>.presence` in that folder, rewritten now and then and removed when
+it lets the emulator go; a mark whose bridge is gone or that has not been rewritten for a while counts
+for nothing. Once no mark has been live for the idle period, the watcher asks the emulator to power
+off over gRPC (`setVmState(SHUTDOWN)`), and it exits once the emulator is gone. A lock file per
+emulator keeps a second watcher from running, and each mark carries its bridge's idle period, so the
+newest session's setting applies. The emulator's own `-idle-grpc-timeout` cannot do this: Android
+Studio keeps a gRPC connection to every running emulator.
 
 With no emulator, the bridge shows the first device `adb devices -l` lists in the `device` state that
 is not a running emulator it found; a device listed twice (the same `ro.serialno`, over USB and over
@@ -151,6 +166,12 @@ The bridge's flags:
 - `-discovery-dir`: where emulators write `pid_<pid>.ini`.
 - `-captures-dir`: where screenshots and recordings are saved; otherwise the Desktop.
 - `-adb`: the adb binary; otherwise the SDK's `platform-tools`, then `PATH`.
+- `-idle-shutdown`: how long an emulator the bridge boots may go unshown before it shuts down (a Go
+  duration such as `15m`; `0` never).
+- `-log-dir`: where emulator and watcher logs, presence marks and watcher locks go; otherwise
+  `$TMPDIR/claude-android-emulator`.
+- `-watch-emulator` and `-emulator-pid`: run as the idle watcher of that AVD's emulator instead of
+  serving the live view; the bridge starts it so.
 - `-v`: debug logs.
 
 The toolbar's routes, each a `POST` with a JSON body: `/rotate` (`{"direction": "left"}` or
@@ -204,6 +225,7 @@ The page serves only this machine: the bridge listens on 127.0.0.1 and refuses r
 | `bridge/` | The Go bridge: SDK and AVDs, the emulator launcher, discovery, gRPC client, the live view page and its socket |
 | `bridge/internal/scrcpy/` | The pinned scrcpy server the bridge embeds, its licence, and its protocol |
 | `bridge/internal/phone/` | A phone adb reaches, shown through the scrcpy server |
+| `bridge/internal/idle/` | Presence marks and the idle watcher that shuts an unused emulator down |
 | `bridge/proto/` | Pinned copy of the Android SDK's `emulator_controller.proto`; `go -C bridge generate ./...` regenerates `bridge/internal/emulatorpb/` |
 | `tests/` | `claude plugin test` suites |
 | `docs/plan.md` | Findings, target architecture, roadmap, decisions, spike log |

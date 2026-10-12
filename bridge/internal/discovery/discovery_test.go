@@ -27,7 +27,7 @@ func TestDiscoverPicksTheEmulatorWithGrpc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []Emulator{{Serial: "emulator-5554", AVD: "Pixel_7", GRPCPort: 8554, Token: "abc=="}}
+	want := []Emulator{{PID: 200, Serial: "emulator-5554", AVD: "Pixel_7", GRPCPort: 8554, Token: "abc=="}}
 	if !reflect.DeepEqual(found, want) {
 		t.Fatalf("Find = %+v, want %+v", found, want)
 	}

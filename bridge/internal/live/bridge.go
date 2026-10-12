@@ -16,6 +16,7 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/emulator"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/idle"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
@@ -35,6 +36,10 @@ type Config struct {
 	// ADB is the adb binary; empty finds the SDK's, then the one on PATH.
 	ADB string
 	Now func() time.Time
+	// IdleShutdown is how long an emulator the bridge boots may go unshown before it is shut down; 0 never.
+	IdleShutdown time.Duration
+	// WatchIdle starts, detached, the watcher that shuts the emulator for avd with pid down once idle; nil starts none.
+	WatchIdle func(avd string, pid int) error
 }
 
 // State is what the bridge knows about the device it shows, as /status and the live view see it.
@@ -166,6 +171,7 @@ func (b *Bridge) Run(ctx context.Context) {
 		if conn.Kind() == device.Phone {
 			go b.watchForEmulator(streaming, stopStreaming)
 		}
+		hidePresence := b.showPresence(streaming, conn)
 		var hasStreamed atomic.Bool
 		err := conn.Stream(streaming, b.config.StreamWidth, func(frame device.Frame) {
 			if hasStreamed.CompareAndSwap(false, true) {
@@ -175,6 +181,7 @@ func (b *Bridge) Run(ctx context.Context) {
 		})
 		isSwitched := streaming.Err() != nil
 		stopStreaming()
+		hidePresence()
 		if conn.Kind() == device.Phone && !isSwitched && !hasStreamed.Load() {
 			b.noteFailure(conn.Serial(), err)
 		}
@@ -233,6 +240,32 @@ func (b *Bridge) attach(conn device.Device) {
 	}
 	b.mu.Unlock()
 	b.notifyViewers()
+}
+
+// showPresence keeps a presence mark for an emulator while it shows, so its idle watcher leaves it up; the returned
+// function, called once ctx has ended, waits for the last refresh and removes the mark.
+func (b *Bridge) showPresence(ctx context.Context, conn device.Device) func() {
+	if conn.Kind() != device.Emulator || conn.Name() == "" {
+		return func() {}
+	}
+	mark := idle.Mark{Dir: idle.PresenceDir(b.config.LogDir), AVD: conn.Name(), PID: os.Getpid(), Period: b.config.IdleShutdown}
+	refreshed := make(chan struct{})
+	go func() {
+		defer close(refreshed)
+		for ctx.Err() == nil {
+			if err := mark.Write(); err != nil {
+				b.config.Logger.Warn("cannot write the presence mark", "avd", mark.AVD, "err", err)
+			}
+			sleep(ctx, idle.RefreshInterval)
+		}
+	}()
+
+	return func() {
+		<-refreshed
+		if err := mark.Remove(); err != nil {
+			b.config.Logger.Warn("cannot remove the presence mark", "avd", mark.AVD, "err", err)
+		}
+	}
 }
 
 func (b *Bridge) watchBoot(ctx context.Context, conn device.Device) {

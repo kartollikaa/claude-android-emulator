@@ -15,8 +15,9 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/proc"
 )
 
-// Emulator is one running emulator that serves gRPC; AVD is the name it was started with.
+// Emulator is one running emulator that serves gRPC; AVD is the name it was started with, PID the process that wrote the file.
 type Emulator struct {
+	PID      int
 	Serial   string
 	AVD      string
 	GRPCPort int
@@ -43,7 +44,7 @@ func Find(dir string) ([]Emulator, error) {
 		if err != nil || port <= 0 {
 			continue
 		}
-		emulator := Emulator{AVD: values["avd.id"], GRPCPort: port, Token: values["grpc.token"]}
+		emulator := Emulator{PID: file.pid, AVD: values["avd.id"], GRPCPort: port, Token: values["grpc.token"]}
 		if serial := values["port.serial"]; serial != "" {
 			emulator.Serial = "emulator-" + serial
 		}

@@ -1,9 +1,17 @@
 {
   "name": "android-emulator",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Runs the Android emulator in the Claude desktop app: /emulator opens its live view in the browser pane, one Start button boots it",
   "author": {
     "name": "Dmitrii Maksimov"
   },
-  "repository": "https://github.com/kartollikaa/claude-android-emulator"
+  "repository": "https://github.com/kartollikaa/claude-android-emulator",
+  "userConfig": {
+    "idleShutdownMinutes": {
+      "type": "number",
+      "title": "Shut down an unused emulator after (minutes)",
+      "description": "An emulator started from the live view shuts down once no Claude session has shown it for this long; 0 keeps it running",
+      "default": 15
+    }
+  }
 }
