@@ -27,13 +27,13 @@ const ACTIONS = ['start', 'screenshot', 'tap', 'swipe', 'text', 'button', 'open_
 export const toolSpec: ToolSpec = {
   name: 'emulator',
   description: [
-    'See and drive the Android emulator: the device the /emulator live view shows.',
-    'start boots a virtual device when none runs and waits for it; screenshot returns the screen as an image.',
+    'See and drive the Android device the /emulator live view shows: an emulator, or a phone connected over USB or Wi-Fi.',
+    'start boots a virtual device when none runs and waits for it (with a phone shown it only says so); screenshot returns the screen as an image.',
     "tap, swipe and their x/y take pixels of the latest screenshot, origin top-left; take one first, and again after the screen turns.",
-    'text types into the focused field, button presses a hardware or navigation key, open_url opens a link or deep link,',
+    "text types into the focused field (a phone types only what its key map has, ASCII), button presses a hardware or navigation key, open_url opens a link or deep link,",
     'launch starts an installed app by package or installs an .apk first, logs reads logcat (one app\'s when package is given),',
     'settings reads or changes the dark theme, font scale, display density and language (reset restores the defaults),',
-    'rotate turns the device a quarter. Look at a screenshot after an action to see its effect.',
+    "rotate turns the device a quarter (a phone's locked rotation, auto-rotate off). Look at a screenshot after an action to see its effect.",
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -72,7 +72,15 @@ export type Outcome = { blocks: Block[] } | { error: string }
 
 type Input = Record<string, unknown>
 type Screen = { jpeg: string; width: number; height: number; rotation: string }
-type State = { connected: boolean; booted: boolean; avd: string; launch?: { avd: string; phase: string; error?: string } }
+type State = {
+  connected: boolean
+  booted: boolean
+  avd: string
+  kind?: string
+  model?: string
+  serial?: string
+  launch?: { avd: string; phase: string; error?: string }
+}
 
 const said = (text: string): Outcome => ({ blocks: [{ type: 'text', text }] })
 
@@ -198,6 +206,9 @@ const isUnderWay = (state: State) => state.connected || state.launch?.phase === 
 
 async function start(call: Call, avd: string | undefined): Promise<Outcome> {
   let state = await answer<State>(call, 'GET', '/status')
+  if (state.connected && state.kind === 'device') {
+    return said(`A phone is connected, ${state.model || state.serial}, and the other actions drive it; start boots no emulator while it shows.`)
+  }
   if (state.booted && avd !== undefined && state.avd !== '' && state.avd !== avd) {
     refuse(`${state.avd} is running, not ${avd}; shut it down from the live view first.`)
   }

@@ -231,6 +231,16 @@ test('start leaves a running emulator alone and joins a boot already under way',
   expect(booting.requests.map(request => request.path)).toEqual(['/status', '/status?wait=booted'])
 })
 
+test('start with a phone shown only says so', async () => {
+  const { call, requests } = bridge({ 'GET /status': json({ connected: true, booted: true, avd: '', kind: 'device', model: 'Pixel 9a' }) })
+
+  expect(await runAction(call, { action: 'start' })).toEqual({
+    blocks: [{ type: 'text', text: 'A phone is connected, Pixel 9a, and the other actions drive it; start boots no emulator while it shows.' }],
+  })
+  expect(await runAction(call, { action: 'start', avd: 'Pixel_9' })).toEqual({ blocks: [{ type: 'text', text: expect.stringMatching(/^A phone is connected/) }] })
+  expect(requests.map(request => request.path)).toEqual(['/status', '/status'])
+})
+
 test('start waits for an emulator the bridge attached to as the start was asked', async () => {
   const avds = json({ avds: [{ name: 'Pixel_9', running: true }] })
   const busy = { status: 409, text: 'busy: an emulator is already running\n' }
