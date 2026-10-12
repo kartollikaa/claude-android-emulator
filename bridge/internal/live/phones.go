@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -62,7 +63,9 @@ func (b *Bridge) connectPhone(ctx context.Context) device.Device {
 			emulators[candidate.Serial] = true
 		}
 	}
-	choice := phone.Choose(adb.ParseDevices(string(output)), func(serial string) bool { return emulators[serial] }, func(serial string) string {
+	listed := adb.ParseDevices(string(output))
+	b.forgetUnlisted(listed)
+	choice := phone.Choose(listed, func(serial string) bool { return emulators[serial] }, func(serial string) string {
 		return b.serialNumber(ctx, adb.Device{Path: path, Serial: serial})
 	})
 	if !choice.IsFound {
@@ -96,6 +99,17 @@ func (b *Bridge) serialNumber(ctx context.Context, shell adb.Device) string {
 	b.mu.Unlock()
 
 	return number
+}
+
+// forgetUnlisted drops what the bridge remembers about serials adb no longer lists: a serial can come back as another device.
+func (b *Bridge) forgetUnlisted(listed []adb.Listed) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for serial := range b.serialNumbers {
+		if !slices.ContainsFunc(listed, func(device adb.Listed) bool { return device.Serial == serial }) {
+			delete(b.serialNumbers, serial)
+		}
+	}
 }
 
 func (b *Bridge) setUnauthorized(serial string) {
