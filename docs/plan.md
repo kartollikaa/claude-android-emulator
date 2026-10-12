@@ -13,7 +13,7 @@ binaries) and asks Claude to open its live view in the app's built-in browser pa
 the SDK's virtual devices, boots one from a Start button and shows it live and touchable; a toolbar
 rotates it, saves screenshots and screen recordings, opens App info and presses Power, and a settings
 panel switches the dark theme, font size, display size and language; Claude's `emulator` tool
-sees and drives the same device; the emulator outlives the session. With no emulator running, a phone
+sees and drives the same device; the emulator outlives the session, and one no session has shown for a while shuts itself down. With no emulator running, a phone
 adb reaches over USB or Wi-Fi shows the same way, streamed by the embedded scrcpy server and decoded in
 the page. The in-pane live view, the terminal code and the prototype helper are gone. See the spike
 log at the end.
@@ -224,6 +224,17 @@ Later: one emulator or device per session, each bridge claiming its own.
 - **The emulator outlives the session**, as Android Studio's and the iOS Simulator's do: it runs
   until Shut down, and the next `/emulator` shows it again. The bridge boots it through a launcher
   that exits at once, so the engine's kill of the bridge's process tree spares it.
+- **An emulator nobody uses shuts itself down** (owner): once no Claude session's bridge has shown it
+  for the idle period, a `userConfig` setting (0 turns it off), it powers off as Shut down does
+  (`setVmState(SHUTDOWN)`). A bridge showing an emulator keeps a presence mark (the AVD and its own
+  pid) under `$TMPDIR/claude-android-emulator/presence/`; a watcher, the bridge's binary run with
+  `-watch-emulator` through the same launcher, so it outlives the session, polls the marks and shuts
+  the emulator down once none has been live for the period. Only emulators the bridge boots get a
+  watcher, started at the boot rather than at every attach: one Android Studio started may be in use
+  there, where no mark can show it, and phones are never touched. Each mark carries its bridge's idle
+  period, so the newest session's setting reaches a watcher already running. A lock per emulator (the
+  AVD and its pid; `flock`, `LockFileEx` on Windows) keeps a second watcher out. The emulator's own
+  `-idle-grpc-timeout` cannot do this (see the spike log).
 
 - **One tool for Claude, an action per call**, as the iOS Simulator's `control` tool is: one
   schema in the prompt rather than a dozen, and the description says how the actions fit together
@@ -267,3 +278,4 @@ Later: one emulator or device per session, each bridge claiming its own.
 | scrcpy server 3.3.3 against Pixel_7 | Pushed, started with `tunnel_forward=true audio=false control=true max_size=1080 send_device_meta=false`, reached through `adb forward tcp:… localabstract:scrcpy_<scid>`: the dummy byte, then codec metadata `h264` 488×1080, a 33-byte config packet (SPS, PPS) and a key frame. Home by key code, a tap carrying the video size opened a Settings row, `RESET_VIDEO` gave a fresh config packet and key frame. `ROTATE_DEVICE` set `user_rotation` but turned nothing in a portrait-locked activity |
 | Pixel 9a (Android 17) over USB through the bridge | With no emulator, the bridge attached to the phone within a second of starting: `/status` named it `device`, `Pixel 9a`, booted, panel 1080×2424 from `wm size`, video 536×1208 (H.264 High 3.2, a 31-byte config packet) at `-stream-width 540`. A new viewer got the state, then the config packet and a key frame. Home by key code and `/launch` of Settings acted on the phone. `/screen` took 0.6–0.7 s on a still screen, almost all of it `screencap -p` on the phone, and up to 2.5 s right after an action. The launcher stays portrait whatever `user_rotation` says, so rotation counts on from `user_rotation`, not the display's. When an emulator shut down, the bridge fell back to the phone about a second later. A bridge stopped by SIGTERM first left its `adb forward` behind (it exited before the stream's cleanup); it now waits for it. Second run, after the review fixes: the live view in the browser pane decoded the phone's video through WebCodecs and drew it; a swipe from the page at a human pace opened the app drawer (the browser tool's own drag lands in a few milliseconds and the launcher ignores it), and the page's Home answered; in Settings a turn left gave a 1208×536 video and `landscape`, a turn right brought back 536×1208 and `portrait`; `/screenshot` saved a PNG, `/shutdown` answered 409. SIGTERM left no forward and no server process on the phone. Not yet measured: packet and byte rates while scrolling, Wi-Fi |
 | `$.http.fetch` on a slow answer | A throwaway mod fetched from a server that answers after 30 s: the fetch was aborted at 30 s with `no complete answer within 30000ms`. The bridge's boot wait answers well inside that, and a cold boot from the tool (snapshot boot) finished inside a single wait |
+| Idle shutdown | The emulator's `-idle-grpc-timeout` never fires while Android Studio is open: Studio holds a gRPC connection to every running emulator, as a bridge does while it shows one, and whether an open but quiet screen stream counts as activity could not be isolated. Hence presence marks and a watcher of the mod's own. With the bridge built from source and a 1-minute period against Pixel_7: Start's pid is `qemu-system-aarch64` itself (the `emulator` launcher execs it), and the watcher ran under launchd in a session of its own. A SIGKILL to the booting bridge's whole process group, as the engine's kill is, left the watcher and the emulator running; a second bridge attached 40 s later and kept it up past the period while it showed it (a session's bridge without presence marks showing it too did not); 60 s after that bridge stopped, the watcher sent `SHUTDOWN`, the emulator exited at once and the watcher a poll later, its lock and the marks gone |
