@@ -73,9 +73,11 @@ type Phone struct {
 	panel   device.Size
 	options Options
 
-	mu        sync.Mutex
-	control   net.Conn
-	video     device.Size
+	mu      sync.Mutex
+	control net.Conn
+	video   device.Size
+	// sending keeps control messages whole and in order, and guards isPressed, without holding up the video.
+	sending   sync.Mutex
 	isPressed bool
 	// rotation is the display's as of the newest config packet.
 	rotation atomic.Int32
@@ -190,8 +192,11 @@ func (p *Phone) Stream(ctx context.Context, width int, onFrame func(device.Frame
 	}()
 	// The server writes device messages back; draining them keeps it from blocking.
 	go io.Copy(io.Discard, control)
+	p.sending.Lock()
+	p.isPressed = false
+	p.sending.Unlock()
 	p.mu.Lock()
-	p.control, p.isPressed = control, false
+	p.control = control
 	p.mu.Unlock()
 	defer func() {
 		p.mu.Lock()
@@ -364,23 +369,27 @@ func (p *Phone) Upright() device.Size {
 
 // send writes control messages to the server, in order and whole.
 func (p *Phone) send(ctx context.Context, messages ...[]byte) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.sending.Lock()
+	defer p.sending.Unlock()
 
 	return p.sendLocked(ctx, messages...)
 }
 
+// sendLocked is send for a caller that holds p.sending.
 func (p *Phone) sendLocked(ctx context.Context, messages ...[]byte) error {
-	if p.control == nil {
+	p.mu.Lock()
+	control := p.control
+	p.mu.Unlock()
+	if control == nil {
 		return ErrNotStreaming
 	}
 	deadline := time.Now().Add(writeTimeout)
 	if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
 		deadline = limit
 	}
-	p.control.SetWriteDeadline(deadline)
+	control.SetWriteDeadline(deadline)
 	for _, message := range messages {
-		if _, err := p.control.Write(message); err != nil {
+		if _, err := control.Write(message); err != nil {
 			return err
 		}
 	}
@@ -390,8 +399,9 @@ func (p *Phone) sendLocked(ctx context.Context, messages ...[]byte) error {
 
 // Touch presses, moves or lifts one finger at fractions of the upright screen, in the current video's pixels.
 func (p *Phone) Touch(ctx context.Context, x, y float64, isDown bool) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	video := p.videoSize()
+	p.sending.Lock()
+	defer p.sending.Unlock()
 	action := byte(scrcpy.ActionUp)
 	switch {
 	case isDown && p.isPressed:
@@ -401,16 +411,16 @@ func (p *Phone) Touch(ctx context.Context, x, y float64, isDown bool) error {
 	case !p.isPressed:
 		return nil
 	}
-	if p.video.Width <= 0 || p.video.Height <= 0 {
+	if video.Width <= 0 || video.Height <= 0 {
 		return ErrNotStreaming
 	}
 	touch := scrcpy.Touch{
 		Action:  action,
 		Pointer: scrcpy.PointerFinger,
-		X:       toPixel(x, p.video.Width),
-		Y:       toPixel(y, p.video.Height),
-		Width:   uint16(p.video.Width),
-		Height:  uint16(p.video.Height),
+		X:       toPixel(x, video.Width),
+		Y:       toPixel(y, video.Height),
+		Width:   uint16(video.Width),
+		Height:  uint16(video.Height),
 	}
 	if err := p.sendLocked(ctx, touch.Message()); err != nil {
 		return err
