@@ -20,6 +20,8 @@ const (
 	// How long a powered-off emulator may take to exit before the watcher stops it the hard way.
 	shutdownGrace = 2 * time.Minute
 	dialTimeout   = 10 * time.Second
+	// The same failed shutdown is retried at every poll but warned of no more often than this.
+	warnEvery = time.Minute
 )
 
 // LockPath is the lock a watcher of the emulator with pid holds while it runs.
@@ -44,6 +46,8 @@ type Watcher struct {
 	lastShown  time.Time
 	askedAt    time.Time
 	terminated bool
+	warned     string
+	warnedAt   time.Time
 }
 
 // Run watches until the emulator is gone or ctx ends; it returns at once when another watcher has the emulator.
@@ -111,7 +115,10 @@ func (w *Watcher) check(ctx context.Context, now time.Time) bool {
 		}
 	case w.Period > 0 && now.Sub(w.lastShown) >= w.Period:
 		if err := w.shutdown(ctx); err != nil {
-			w.Logger.Warn("cannot shut the idle emulator down yet", "avd", w.AVD, "err", err)
+			if err.Error() != w.warned || now.Sub(w.warnedAt) >= warnEvery {
+				w.Logger.Warn("cannot shut the idle emulator down yet", "avd", w.AVD, "err", err)
+				w.warned, w.warnedAt = err.Error(), now
+			}
 			return false
 		}
 		w.Logger.Info("shut down an idle emulator", "avd", w.AVD, "idle", now.Sub(w.lastShown))

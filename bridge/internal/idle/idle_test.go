@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -314,5 +315,24 @@ func TestTheLockHasOneHolderWhileHoldersComeAndGo(t *testing.T) {
 
 	if overlaps.Load() > 0 {
 		t.Errorf("two holders at once %d times", overlaps.Load())
+	}
+}
+
+func TestAFailingShutdownIsRetriedQuietly(t *testing.T) {
+	_, watcher, _ := watched(t)
+	watcher.DiscoveryDir = t.TempDir()
+	var logged strings.Builder
+	watcher.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	warnings := func() int { return strings.Count(logged.String(), "cannot shut the idle emulator down") }
+
+	for poll := range 12 {
+		watcher.check(context.Background(), t0.Add(period+time.Duration(poll)*maxPoll))
+	}
+	if warnings() != 1 {
+		t.Fatalf("warned %d times in a minute of the same failure, want once:\n%s", warnings(), logged.String())
+	}
+	watcher.check(context.Background(), t0.Add(period+12*maxPoll))
+	if warnings() != 2 {
+		t.Errorf("warned %d times, want again once a minute has passed", warnings())
 	}
 }
