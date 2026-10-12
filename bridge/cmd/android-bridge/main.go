@@ -12,10 +12,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/discovery"
+	"github.com/kartollikaa/claude-android-emulator/bridge/internal/idle"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/live"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
@@ -28,6 +31,10 @@ func main() {
 	sdkDir := flag.String("sdk", "", "Android SDK folder (default: ANDROID_HOME, ANDROID_SDK_ROOT, then the platform's default)")
 	capturesDir := flag.String("captures-dir", "", "where screenshots and screen recordings are saved (default: the Desktop)")
 	adbPath := flag.String("adb", "", "the adb binary (default: the SDK's platform-tools, then PATH)")
+	idleShutdown := flag.Duration("idle-shutdown", 15*time.Minute, "shut down an emulator the bridge boots once no bridge has shown it for this long; 0 never")
+	logDir := flag.String("log-dir", filepath.Join(os.TempDir(), "claude-android-emulator"), "where emulator logs, presence marks and watcher locks go")
+	watchAVD := flag.String("watch-emulator", "", "run as the idle watcher of this AVD's emulator instead of serving the live view")
+	emulatorPID := flag.Int("emulator-pid", 0, "the watched emulator's pid, with -watch-emulator")
 	verbose := flag.Bool("v", false, "log debug detail")
 	flag.Parse()
 
@@ -37,7 +44,22 @@ func main() {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	config := live.Config{DiscoveryDir: *discoveryDir, StreamWidth: *streamWidth, CapturesDir: *capturesDir, ADB: *adbPath, Logger: logger}
+	if *watchAVD != "" {
+		watcher := idle.Watcher{AVD: *watchAVD, PID: *emulatorPID, Period: *idleShutdown, LogDir: *logDir,
+			DiscoveryDir: *discoveryDir, Logger: logger}
+		if err := watcher.Run(context.Background()); err != nil {
+			logger.Error(err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+
+	config := live.Config{DiscoveryDir: *discoveryDir, StreamWidth: *streamWidth, CapturesDir: *capturesDir, ADB: *adbPath,
+		Logger: logger, LogDir: *logDir, IdleShutdown: *idleShutdown}
+	config.WatchIdle = func(avd string, pid int) error {
+		_, err := startWatcher(config, avd, pid)
+		return err
+	}
 	if *sdkDir != "" {
 		config.SDKCandidates = []string{*sdkDir}
 	}
@@ -48,6 +70,23 @@ func main() {
 }
 
 const cleanupTimeout = 5 * time.Second
+
+// startWatcher runs this binary as the idle watcher of the emulator for avd, outside the bridge's process tree so it
+// outlives the session; it returns the watcher's pid.
+func startWatcher(config live.Config, avd string, pid int) (int, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return 0, err
+	}
+	watcher, err := sdk.Detach([]string{self, "-watch-emulator", avd, "-emulator-pid", strconv.Itoa(pid),
+		"-idle-shutdown", config.IdleShutdown.String(), "-log-dir", config.LogDir, "-discovery-dir", config.DiscoveryDir},
+		idle.LogPath(config.LogDir, avd))
+	if err == nil {
+		config.Logger.Info("watching the emulator for idleness", "avd", avd, "watcher", watcher, "idle", config.IdleShutdown)
+	}
+
+	return watcher, err
+}
 
 func run(port int, config live.Config) error {
 	listener, err := live.Listen(port)
