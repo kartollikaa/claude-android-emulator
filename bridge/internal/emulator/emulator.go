@@ -263,4 +263,3 @@ func (c *Conn) Text(ctx context.Context, text string) error {
 
 	return err
 }
-

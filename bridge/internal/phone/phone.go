@@ -504,7 +504,6 @@ func (p *Phone) Booted(ctx context.Context) (bool, error) {
 
 func (p *Phone) Shutdown(context.Context) error { return device.ErrCannotShutDown }
 
-
 // fitRGB scales picture down to size, averaging the source pixels under each one; a picture turned the other way
 // than size (the phone turned since) is fitted inside it instead, keeping its shape.
 func fitRGB(picture image.Image, size device.Size) device.Frame {
