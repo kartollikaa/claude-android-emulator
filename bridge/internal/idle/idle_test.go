@@ -93,17 +93,18 @@ func TestARemovedMarkIsAbsent(t *testing.T) {
 	}
 }
 
-// watched starts a fake emulator of Pixel_7 and a watcher of it whose clock starts at t0.
-func watched(t *testing.T) (*fakeemulator.Fake, *Watcher) {
+// watched starts a fake emulator of Pixel_7, whose process stopEmulator ends, and a watcher of it whose clock starts
+// at t0.
+func watched(t *testing.T) (fake *fakeemulator.Fake, watcher *Watcher, stopEmulator func()) {
 	t.Helper()
-	fake := fakeemulator.Start(t, 8, 16, "token")
+	fake = fakeemulator.Start(t, 8, 16, "token")
 	fake.AVD = "Pixel_7"
 	discoveryDir := t.TempDir()
-	fake.WriteINI(t, discoveryDir, os.Getpid())
-	pid, _ := livingPID(t)
-	watcher := &Watcher{AVD: "Pixel_7", PID: pid, Period: period, LogDir: t.TempDir(), DiscoveryDir: discoveryDir,
+	pid, stopEmulator := livingPID(t)
+	fake.WriteINI(t, discoveryDir, pid)
+	watcher = &Watcher{AVD: "Pixel_7", PID: pid, Period: period, LogDir: t.TempDir(), DiscoveryDir: discoveryDir,
 		Logger: quiet(), lastShown: t0}
-	return fake, watcher
+	return fake, watcher, stopEmulator
 }
 
 func shutdowns(fake *fakeemulator.Fake) int {
@@ -117,7 +118,7 @@ func shutdowns(fake *fakeemulator.Fake) int {
 }
 
 func TestWatcherShutsTheEmulatorDownOnceThePeriodPasses(t *testing.T) {
-	fake, watcher := watched(t)
+	fake, watcher, _ := watched(t)
 	ctx := context.Background()
 
 	if watcher.check(ctx, t0.Add(period-time.Second)) || shutdowns(fake) != 0 {
@@ -136,7 +137,7 @@ func TestWatcherShutsTheEmulatorDownOnceThePeriodPasses(t *testing.T) {
 }
 
 func TestAShownEmulatorStaysUpAndTheNewestPeriodApplies(t *testing.T) {
-	fake, watcher := watched(t)
+	fake, watcher, _ := watched(t)
 	ctx := context.Background()
 	mark := Mark{Dir: PresenceDir(watcher.LogDir), AVD: "Pixel_7", PID: os.Getpid(), Period: 2 * period}
 
@@ -162,7 +163,7 @@ func TestAShownEmulatorStaysUpAndTheNewestPeriodApplies(t *testing.T) {
 }
 
 func TestAPeriodOfZeroNeverShutsDown(t *testing.T) {
-	fake, watcher := watched(t)
+	fake, watcher, _ := watched(t)
 	watcher.Period = 0
 
 	watcher.check(context.Background(), t0.Add(1000*time.Hour))
@@ -173,8 +174,8 @@ func TestAPeriodOfZeroNeverShutsDown(t *testing.T) {
 }
 
 func TestTheWatchEndsWhenTheEmulatorIsGone(t *testing.T) {
-	fake, watcher := watched(t)
-	watcher.PID = deadPID(t)
+	fake, watcher, stopEmulator := watched(t)
+	stopEmulator()
 
 	if !watcher.check(context.Background(), t0.Add(2*period)) {
 		t.Error("the watch went on with the emulator gone")
@@ -202,7 +203,7 @@ func TestOneWatcherPerEmulator(t *testing.T) {
 }
 
 func TestASecondWatcherLeavesAtOnce(t *testing.T) {
-	_, watcher := watched(t)
+	_, watcher, _ := watched(t)
 	release, err := Lock(LockPath(watcher.LogDir, watcher.AVD, watcher.PID))
 	if err != nil {
 		t.Fatal(err)
@@ -217,9 +218,8 @@ func TestASecondWatcherLeavesAtOnce(t *testing.T) {
 }
 
 func TestRunShutsDownAnIdleEmulatorAndEndsWithIt(t *testing.T) {
-	fake, watcher := watched(t)
-	pid, stopEmulator := livingPID(t)
-	watcher.PID = pid
+	fake, watcher, stopEmulator := watched(t)
+	pid := watcher.PID
 	watcher.Period = 200 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -247,7 +247,7 @@ func TestRunShutsDownAnIdleEmulatorAndEndsWithIt(t *testing.T) {
 }
 
 func TestAnEmulatorShownAgainAfterItsShutdownWasAskedWaitsAFullPeriod(t *testing.T) {
-	fake, watcher := watched(t)
+	fake, watcher, _ := watched(t)
 	ctx := context.Background()
 	watcher.Period = 10 * time.Minute
 	asked := t0.Add(watcher.Period)
@@ -266,5 +266,22 @@ func TestAnEmulatorShownAgainAfterItsShutdownWasAskedWaitsAFullPeriod(t *testing
 	time.Sleep(300 * time.Millisecond)
 	if !proc.Alive(watcher.PID) {
 		t.Fatal("the emulator was stopped the hard way before a full idle period passed since it was last shown")
+	}
+}
+
+func TestTheWatcherFollowsThePidTheDiscoveryFileNames(t *testing.T) {
+	_, watcher, stopEmulator := watched(t)
+	emulator := watcher.PID
+	watcher.PID = deadPID(t)
+
+	if watcher.check(context.Background(), t0) {
+		t.Fatal("the watch ended when the launcher's pid did, with the discovery file naming a running emulator")
+	}
+	if watcher.PID != emulator {
+		t.Errorf("following pid %d, want the discovery file's %d", watcher.PID, emulator)
+	}
+	stopEmulator()
+	if !watcher.check(context.Background(), t0) {
+		t.Error("the watch went on with the emulator the discovery file names gone")
 	}
 }

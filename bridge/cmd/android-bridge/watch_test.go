@@ -25,11 +25,11 @@ func TestTheIdleWatcherRunsDetachedAndShutsTheEmulatorDown(t *testing.T) {
 	fake.AVD = "Pixel_7"
 	config := live.Config{DiscoveryDir: t.TempDir(), LogDir: t.TempDir(), IdleShutdown: 300 * time.Millisecond,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	fake.WriteINI(t, config.DiscoveryDir, os.Getpid())
 	emulator := exec.Command("/bin/sleep", "60")
 	if err := emulator.Start(); err != nil {
 		t.Fatal(err)
 	}
+	fake.WriteINI(t, config.DiscoveryDir, emulator.Process.Pid)
 	t.Cleanup(func() {
 		emulator.Process.Kill()
 		emulator.Wait()

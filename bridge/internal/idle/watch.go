@@ -30,7 +30,8 @@ func LockPath(logDir, avd string, pid int) string {
 // LogPath is where a watcher of avd logs.
 func LogPath(logDir, avd string) string { return filepath.Join(logDir, "watch-"+avd+".log") }
 
-// Watcher shuts the emulator for AVD, whose process is PID, down once no bridge has shown it for Period.
+// Watcher shuts the emulator for AVD down once no bridge has shown it for Period. PID is the process Start launched,
+// until the AVD's discovery file names the emulator's own.
 type Watcher struct {
 	AVD          string
 	PID          int
@@ -87,6 +88,7 @@ func pollInterval(period time.Duration) time.Duration {
 
 // check takes one look at now and reports whether the watch is over, the emulator being gone.
 func (w *Watcher) check(ctx context.Context, now time.Time) bool {
+	w.follow()
 	if !proc.Alive(w.PID) {
 		w.Logger.Info("the emulator is gone", "avd", w.AVD)
 		return true
@@ -117,6 +119,21 @@ func (w *Watcher) check(ctx context.Context, now time.Time) bool {
 	}
 
 	return false
+}
+
+// follow switches to the pid the AVD's discovery file names once it names a running one.
+func (w *Watcher) follow() {
+	found, err := discovery.Find(w.DiscoveryDir)
+	if err != nil {
+		return
+	}
+	for _, candidate := range found {
+		if candidate.AVD == w.AVD && candidate.PID != w.PID && proc.Alive(candidate.PID) {
+			w.Logger.Info("following the emulator's own pid", "avd", w.AVD, "pid", candidate.PID, "launched", w.PID)
+			w.PID = candidate.PID
+			return
+		}
+	}
 }
 
 // shutdown asks the emulator, found by its discovery file, to power off as Shut down in the live view does.
