@@ -36,7 +36,7 @@ const (
 	cleanupTimeout = 5 * time.Second
 	// A control message the server does not take within this long counts it gone.
 	writeTimeout = 2 * time.Second
-	// Wi-Fi carries the video at half of scrcpy's default 8 Mbps, which a phone screen of this size does not need.
+	// Over the network the video gets half of scrcpy's default 8 Mbps, plenty for a phone screen at the stream's size.
 	wifiBitRate = 4_000_000
 )
 

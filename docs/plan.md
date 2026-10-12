@@ -13,8 +13,10 @@ binaries) and asks Claude to open its live view in the app's built-in browser pa
 the SDK's virtual devices, boots one from a Start button and shows it live and touchable; a toolbar
 rotates it, saves screenshots and screen recordings, opens App info and presses Power, and a settings
 panel switches the dark theme, font size, display size and language; Claude's `emulator` tool
-sees and drives the same device; the emulator outlives the session. The in-pane live view, the terminal code and the prototype helper
-are gone. See the spike log at the end.
+sees and drives the same device; the emulator outlives the session. With no emulator running, a phone
+adb reaches over USB or Wi-Fi shows the same way, streamed by the embedded scrcpy server and decoded in
+the page. The in-pane live view, the terminal code and the prototype helper are gone. See the spike
+log at the end.
 
 ## Findings
 
@@ -157,23 +159,34 @@ Later: one emulator or device per session, each bridge claiming its own.
   way: scrcpy runs over whatever transport adb uses. A phone listed twice (USB and Wi-Fi, the same
   `ro.serialno`) counts once, over USB. Pairing a new phone over Wi-Fi is not covered yet.
 - **Which device shows.** A running emulator first, as today; with none, the first adb device in the
-  `device` state that is not a discovered emulator. Starting an emulator from the page switches the view to
-  it; shutting it down falls back to the phone. A phone in the `unauthorized` state shows on the page
-  with a hint to allow USB debugging on it.
-- **Video.** The bridge runs the pinned scrcpy server (video H.264, no audio, control on, long side
-  from `-stream-width`) and forwards its packets to the page untouched; the page decodes them with
-  WebCodecs and draws each frame on the canvas. A viewer that joins late gets the newest config
-  packet and the packets since the newest key frame; when that backlog grows too large, or a viewer
-  falls behind, the bridge asks for `RESET_VIDEO` and starts over from the next key frame. The bridge
-  reads the current video size from each SPS.
+  `device` state that is not a discovered emulator. While a phone shows, the bridge keeps looking for
+  emulators and switches to one as it answers. The page's Virtual devices button opens the AVD list
+  over the phone; Starting one switches the view to it, and shutting it down falls back to the phone.
+  A phone in the `unauthorized` state shows on the page with a hint to allow USB debugging on it.
+  `/status` names the `kind` (`emulator` or `device`), a phone's `model` and whether it is on `wifi`.
+- **Video.** The bridge runs the pinned scrcpy server (video H.264, no audio, control on, clipboard
+  sync off, long side from `-stream-width`) and forwards its packets to the page untouched; the page
+  decodes them with WebCodecs and draws each frame on the canvas, the newest config packet riding
+  along with every key frame (an Annex B key frame must carry SPS and PPS). Each viewer follows the
+  packets in order: one that joins late gets the newest config packet and the packets since the
+  newest key frame. A backlog past its cap drops its oldest packets and can no longer start a viewer,
+  and a viewer too far behind starts over; either then asks for `RESET_VIDEO` once and starts from
+  the key frame it brings. Viewers that keep up never wait for a reset. The bridge reads the current
+  video size from each SPS and the display's rotation from `dumpsys window` when the size changes.
+- **Bandwidth.** Over USB the server keeps its default bit rate; over the network (a `host:port` or
+  mDNS serial) the bridge asks for half of it, plenty for a phone screen at the stream's size.
 - **Input.** Touches, keys and text go to the scrcpy control socket, touches in the current video's
-  pixels. Rotation sets `user_rotation` through adb with auto-rotate off, since scrcpy's own rotate
-  message only toggles.
+  pixels and keys as Android key codes. Text goes through the phone's key map, so only what it has
+  (ASCII) arrives. Rotation sets `user_rotation` a quarter on from the locked rotation (the display's,
+  if auto-rotate was on) with auto-rotate off, since scrcpy's own rotate message only toggles; an app
+  locked to portrait stays so, as the emulator's does when its sensor turns.
 - **Everything else** runs over adb against the phone's serial, as for an emulator: screenshots
   (`screencap -p`, scaled and JPEG-encoded in the bridge for Claude), recordings, App info, links,
   launching and installing apps, logs and the device settings. A Wi-Fi serial (`host:port`, an mDNS
-  service name) is made safe before it names a capture file. Shut down is an emulator's
-  only: the page hides it and the route refuses it for a phone; Power sleeps and wakes the phone.
+  service name) is made safe before it names a capture file. The panel size is `wm size`'s override
+  when one is set, since the display then draws at it. Shut down is an emulator's only: the page
+  hides it and the route answers 409 for a phone; Power sleeps and wakes the phone. Claude's tool
+  drives a phone as it does an emulator, and its `start` only says a phone is shown.
 
 ## Decisions
 

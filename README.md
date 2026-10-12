@@ -1,13 +1,14 @@
 # Android Emulator for Claude Code
 
-A Claude Code mod that runs an Android emulator inside the Claude desktop app's Code tab: live and
-touchable, in the app's built-in browser pane. It is the Android counterpart of the desktop app's
-built-in iOS Simulator panel.
+A Claude Code mod that runs an Android emulator, or shows a phone connected over USB or Wi-Fi, inside
+the Claude desktop app's Code tab: live and touchable, in the app's built-in browser pane. It is the
+Android counterpart of the desktop app's built-in iOS Simulator panel.
 
 > **Status: in development.** `/emulator` opens the live view, its Start button boots a virtual
 > device, a toolbar rotates it, takes screenshots and recordings, and opens App info, and a settings
 > panel changes its theme, font size, display size and language, and Claude sees and drives the
-> emulator through its own tool. Next: a release with prebuilt bridges.
+> emulator through its own tool. A phone connected over USB or Wi-Fi shows the same way when no
+> emulator runs. Next: a release with prebuilt bridges.
 > See [docs/plan.md](docs/plan.md).
 
 ## Requirements
@@ -15,7 +16,8 @@ built-in iOS Simulator panel.
 - The Claude desktop app (the live view opens in its browser pane), on macOS
 - The Android SDK with the emulator, found through `ANDROID_HOME`, `ANDROID_SDK_ROOT` or the
   platform's default folder (`~/Library/Android/sdk` on macOS)
-- A virtual device (AVD) made in Android Studio's Device Manager
+- A virtual device (AVD) made in Android Studio's Device Manager, or a phone with USB debugging on
+  (Developer options), plugged in or paired once for wireless debugging
 - Until the first release ships prebuilt bridges: Go, at the version `bridge/go.mod` names, which
   `/emulator` uses to build the bridge on first use
 
@@ -52,6 +54,27 @@ The toolbar above the screen:
 The emulator keeps running when the session ends, as Android Studio's does; the next `/emulator`
 shows it again.
 
+### A phone instead of an emulator
+
+With no emulator running, the live view shows a phone instead: one plugged in over USB with USB
+debugging on, or one on the same network with wireless debugging, paired once (Android Studio's
+Device Manager pairs it). The first time a phone is plugged in, it asks whether to allow USB
+debugging; until it is allowed, the page says so. A phone connected both ways shows once, over USB.
+
+The phone works as the emulator does, with these differences:
+
+- There is no Shut down: the power button under the screen is gone, and **Power** sleeps and wakes
+  the phone.
+- **Rotate** turns the phone's screen a quarter and turns its auto-rotate off; an app locked to
+  portrait stays portrait, as it would in hand.
+- Typing on the computer's keyboard sends what the phone's key map has (ASCII); paste other text on
+  the phone itself.
+- The **Virtual devices** button in the toolbar lists the virtual devices: Start one and it takes the
+  phone's place; once it shuts down, the phone shows again.
+
+The phone's screen streams as H.264 video, the way scrcpy shows a phone: the bridge runs a small
+server on the phone while it shows and removes it when it stops.
+
 ### Claude drives it too
 
 Claude has an `emulator` tool on the same device the live view shows, so it can check the app it
@@ -60,7 +83,8 @@ boots a virtual device when none runs, takes screenshots, taps, swipes, types an
 Home and the other keys, opens links and deep links, launches an installed app or installs an
 `.apk` first, reads logcat (one app's or the whole device's), changes the dark theme, font size,
 display size and language, and rotates the device. Each action shows in the live view as it
-happens. The tool starts the bridge by itself, so it works without `/emulator` too.
+happens. The tool starts the bridge by itself, so it works without `/emulator` too. It drives a
+phone the live view shows the same way; its start then only says a phone is shown.
 
 ## Develop
 
@@ -109,6 +133,14 @@ logs to `$TMPDIR/claude-android-emulator/emulator-<avd>.log`; one that never com
 and reported. An emulator already running with gRPC is picked up as it is, and the bridge
 reconnects when one restarts.
 
+With no emulator, the bridge shows the first device `adb devices -l` lists in the `device` state that
+is not a running emulator it found; a device listed twice (the same `ro.serialno`, over USB and over
+the network) shows over USB, and one in the `unauthorized` state is named in `/status` as
+`unauthorized`. It pushes the scrcpy server it embeds to `/data/local/tmp`, reaches it through
+`adb forward` and runs it over `adb shell` (H.264, no audio, control on, the clipboard left alone,
+the long side from `-stream-width`, a lower bit rate over the network). While a phone shows, the bridge keeps
+looking for emulators and switches to one as it appears.
+
 The bridge's flags:
 
 - `-port`: the live view's port (0 picks a free one).
@@ -117,15 +149,26 @@ The bridge's flags:
   default.
 - `-discovery-dir`: where emulators write `pid_<pid>.ini`.
 - `-captures-dir`: where screenshots and recordings are saved; otherwise the Desktop.
+- `-adb`: the adb binary; otherwise the SDK's `platform-tools`, then `PATH`.
 - `-v`: debug logs.
 
 The toolbar's routes, each a `POST` with a JSON body: `/rotate` (`{"direction": "left"}` or
 `"right"`), `/screenshot` and `/recording/stop` (both answer `{"path": …}`), `/recording/start` and
-`/app-settings`. Rotation goes through the emulator's rotation sensor and screenshots through gRPC;
-recording (`screenrecord`) and App info use adb from the SDK's `platform-tools`, or from `PATH`.
+`/app-settings`. Rotation goes through the emulator's rotation sensor and screenshots through gRPC,
+a phone's through `user_rotation` and `screencap -p`; recording (`screenrecord`) and App info use
+adb from the SDK's `platform-tools`, or from `PATH`.
 Frames are drawn upright, so the page sends touches in the upright picture and the bridge turns them
 back onto the panel. `/status` carries the `rotation`, `recordingSince` while recording, the
-newest saved file as `saved`, and `recordingError` when a recording could not be saved.
+newest saved file as `saved`, and `recordingError` when a recording could not be saved; its `kind` is
+`emulator` or `device`, a phone's name is in `model` and `wifi` says adb reaches it over the network.
+`POST /shutdown` answers 409 for a phone.
+
+The live view's socket sends the state as JSON and the screen as binary messages: a kind byte (0 for
+an emulator's RGB888 frame, 1 for a phone's H.264 packet), then the width, height and the frame's
+seq or the packet's flags (1 config, 2 key frame), each a little-endian u32, then the pixels or the
+Annex B packet. A page that joins late gets the newest config packet and every packet since the
+newest key frame; one that cannot start from them makes the bridge ask the phone for a fresh key
+frame.
 
 The settings panel's routes go through adb too. `GET /settings` answers `darkTheme`, `fontScale`,
 `density` and `physicalDensity`, the steps Android's Settings offers for both, and the device
@@ -158,6 +201,13 @@ The page serves only this machine: the bridge listens on 127.0.0.1 and refuses r
 | `hooks/bridge.ts` | Pure helpers: the platform's binary, the bridge's announcement, the prompt |
 | `hooks/tool.ts` | Claude's `emulator` tool: its schema, and each action as calls to the bridge |
 | `bridge/` | The Go bridge: SDK and AVDs, the emulator launcher, discovery, gRPC client, the live view page and its socket |
+| `bridge/internal/scrcpy/` | The pinned scrcpy server the bridge embeds, its licence, and its protocol |
+| `bridge/internal/phone/` | A phone adb reaches, shown through the scrcpy server |
 | `bridge/proto/` | Pinned copy of the Android SDK's `emulator_controller.proto`; `go -C bridge generate ./...` regenerates `bridge/internal/emulatorpb/` |
 | `tests/` | `claude plugin test` suites |
 | `docs/plan.md` | Findings, target architecture, roadmap, decisions, spike log |
+
+## Credits
+
+The bridge embeds the server of [scrcpy](https://github.com/Genymobile/scrcpy) 3.3.3 by Genymobile
+and Romain Vimont, under the Apache License 2.0 (`bridge/internal/scrcpy/LICENSE`).
