@@ -2,6 +2,7 @@ package adb
 
 import (
 	"os/exec"
+	"slices"
 	"testing"
 )
 
@@ -51,5 +52,27 @@ func TestQuoteKeepsOneWordForTheShell(t *testing.T) {
 		if err != nil || string(output) != word {
 			t.Errorf("sh read Quote(%q) as %q (%v)", word, output, err)
 		}
+	}
+}
+
+func TestParseDevices(t *testing.T) {
+	output := "* daemon not running; starting now at tcp:5037\n* daemon started successfully\nList of devices attached\n" +
+		"5C111JEBF10513         device usb:0-1 product:tegu model:Pixel_9a device:tegu transport_id:18\n" +
+		"192.168.1.20:5555      device product:tegu model:Pixel_9a device:tegu transport_id:19\n" +
+		"adb-5C111JEBF10513-Ab12Cd._adb-tls-connect._tcp device product:tegu model:Pixel_9a device:tegu transport_id:20\n" +
+		"R5CT30ABCDE            unauthorized usb:1-2 transport_id:21\n" +
+		"emulator-5554          offline transport_id:22\n\n"
+	want := []Listed{
+		{Serial: "5C111JEBF10513", State: "device", IsUSB: true},
+		{Serial: "192.168.1.20:5555", State: "device"},
+		{Serial: "adb-5C111JEBF10513-Ab12Cd._adb-tls-connect._tcp", State: "device"},
+		{Serial: "R5CT30ABCDE", State: "unauthorized", IsUSB: true},
+		{Serial: "emulator-5554", State: "offline"},
+	}
+	if got := ParseDevices(output); !slices.Equal(got, want) {
+		t.Errorf("ParseDevices = %+v, want %+v", got, want)
+	}
+	if got := ParseDevices("List of devices attached\n\n"); len(got) != 0 {
+		t.Errorf("an empty listing gave %+v", got)
 	}
 }

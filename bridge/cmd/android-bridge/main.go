@@ -1,4 +1,4 @@
-// Command android-bridge serves the running emulator's screen and input on http://127.0.0.1:<port>.
+// Command android-bridge serves the running emulator's or a connected phone's screen and input on http://127.0.0.1:<port>.
 // It writes {"liveView":"<url>"} to stdout once it listens; logs go to stderr.
 package main
 
@@ -27,6 +27,7 @@ func main() {
 	discoveryDir := flag.String("discovery-dir", discovery.DefaultDir(), "where running emulators write pid_<pid>.ini")
 	sdkDir := flag.String("sdk", "", "Android SDK folder (default: ANDROID_HOME, ANDROID_SDK_ROOT, then the platform's default)")
 	capturesDir := flag.String("captures-dir", "", "where screenshots and screen recordings are saved (default: the Desktop)")
+	adbPath := flag.String("adb", "", "the adb binary (default: the SDK's platform-tools, then PATH)")
 	verbose := flag.Bool("v", false, "log debug detail")
 	flag.Parse()
 
@@ -36,7 +37,7 @@ func main() {
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
-	config := live.Config{DiscoveryDir: *discoveryDir, StreamWidth: *streamWidth, CapturesDir: *capturesDir, Logger: logger}
+	config := live.Config{DiscoveryDir: *discoveryDir, StreamWidth: *streamWidth, CapturesDir: *capturesDir, ADB: *adbPath, Logger: logger}
 	if *sdkDir != "" {
 		config.SDKCandidates = []string{*sdkDir}
 	}

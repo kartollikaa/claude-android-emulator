@@ -25,7 +25,7 @@ func TestServerIsTheReleaseAsset(t *testing.T) {
 
 func TestCommandRunsTheServerOfThisVersion(t *testing.T) {
 	command := Options{SCID: 0x1a2b3c, MaxSize: 1212}.Command()
-	for _, want := range []string{"CLASSPATH=" + DevicePath + " ", " com.genymobile.scrcpy.Server 3.3.3 ", " scid=001a2b3c ", " tunnel_forward=true ", " audio=false ", " control=true ", " video_codec=h264 ", " max_size=1212 ", " send_dummy_byte=true "} {
+	for _, want := range []string{"CLASSPATH=" + DevicePath + " ", " com.genymobile.scrcpy.Server 3.3.3 ", " scid=001a2b3c ", " tunnel_forward=true ", " audio=false ", " control=true ", " video_codec=h264 ", " max_size=1212 ", " send_dummy_byte=true ", " clipboard_autosync=false "} {
 		if !strings.Contains(command+" ", want) {
 			t.Errorf("command %q lacks %q", command, want)
 		}

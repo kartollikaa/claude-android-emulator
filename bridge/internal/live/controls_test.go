@@ -24,6 +24,7 @@ import (
 // The fake adb logs calls, keeps device files in device/, records until SIGINT and runs other shell commands through sh with device-bin/ first; offline, broken, limit, pull-time and launchable files steer it.
 const fakeADB = `#!/bin/sh
 d=$(dirname "$0")
+[ "$1" = devices ] && { cat "$d/devices" 2>/dev/null; exit 0; }
 echo "$*" >> "$d/calls"
 [ -f "$d/offline" ] && { echo "adb: device offline" >&2; exit 1; }
 shift 2

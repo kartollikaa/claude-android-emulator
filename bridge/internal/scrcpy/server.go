@@ -37,6 +37,8 @@ func (o Options) Command() string {
 		"CLASSPATH=" + DevicePath, "app_process", "/", "com.genymobile.scrcpy.Server", Version,
 		fmt.Sprintf("scid=%08x", o.SCID), "log_level=info", "tunnel_forward=true", "audio=false", "control=true",
 		"video_codec=h264", fmt.Sprintf("max_size=%d", o.MaxSize), "send_device_meta=false", "send_dummy_byte=true", "cleanup=true",
+		// The phone's clipboard stays on the phone.
+		"clipboard_autosync=false",
 	}
 	if o.BitRate > 0 {
 		args = append(args, fmt.Sprintf("video_bit_rate=%d", o.BitRate))

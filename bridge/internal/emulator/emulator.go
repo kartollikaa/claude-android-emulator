@@ -84,6 +84,8 @@ func Dial(ctx context.Context, emulator discovery.Emulator, logger *slog.Logger)
 
 func (c *Conn) Serial() string { return c.discovered.Serial }
 
+func (c *Conn) Kind() device.Kind { return device.Emulator }
+
 func (c *Conn) Name() string { return c.discovered.AVD }
 
 func (c *Conn) Panel() device.Size { return c.panel }

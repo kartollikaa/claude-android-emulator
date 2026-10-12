@@ -9,14 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/adb"
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/device"
-	"github.com/kartollikaa/claude-android-emulator/bridge/internal/sdk"
 )
 
 const (
@@ -275,14 +273,9 @@ func (b *Bridge) adbDevice() (adb.Device, error) {
 	if conn == nil {
 		return adb.Device{}, ErrNoEmulator
 	}
-	if found, err := sdk.Find(b.config.SDKCandidates, runtime.GOOS); err == nil {
-		if _, err := os.Stat(found.ADB()); err == nil {
-			return adb.Device{Path: found.ADB(), Serial: conn.Serial()}, nil
-		}
-	}
-	path, err := exec.LookPath("adb")
+	path, err := b.adbPath()
 	if err != nil {
-		return adb.Device{}, ErrNoADB
+		return adb.Device{}, err
 	}
 
 	return adb.Device{Path: path, Serial: conn.Serial()}, nil
@@ -293,7 +286,7 @@ func (b *Bridge) newCapture(kind, serial, ext string) (*os.File, error) {
 	if err := os.MkdirAll(b.config.CapturesDir, 0o755); err != nil {
 		return nil, err
 	}
-	base := filepath.Join(b.config.CapturesDir, fmt.Sprintf("%s_%s_%s", kind, serial, b.config.Now().Format("20060102-150405")))
+	base := filepath.Join(b.config.CapturesDir, fmt.Sprintf("%s_%s_%s", kind, fileSafe(serial), b.config.Now().Format("20060102-150405")))
 	for number := 1; ; number++ {
 		name := base + ext
 		if number > 1 {
