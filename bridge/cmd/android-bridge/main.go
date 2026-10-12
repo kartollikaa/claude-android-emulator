@@ -47,6 +47,8 @@ func main() {
 	}
 }
 
+const cleanupTimeout = 5 * time.Second
+
 func run(port int, config live.Config) error {
 	listener, err := live.Listen(port)
 	if err != nil {
@@ -57,7 +59,18 @@ func run(port int, config live.Config) error {
 	go stopWithParent(ctx, stop)
 
 	bridge := live.New(config)
-	go bridge.Run(ctx)
+	ran := make(chan struct{})
+	go func() {
+		bridge.Run(ctx)
+		close(ran)
+	}()
+	// A phone's stream removes its adb forward as it ends; the bridge waits for that before it exits.
+	defer func() {
+		select {
+		case <-ran:
+		case <-time.After(cleanupTimeout):
+		}
+	}()
 
 	server := &http.Server{Handler: bridge.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {

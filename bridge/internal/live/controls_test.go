@@ -21,12 +21,15 @@ import (
 	"github.com/kartollikaa/claude-android-emulator/bridge/internal/fakeemulator"
 )
 
-// The fake adb logs calls, keeps device files in device/, records until SIGINT and runs other shell commands through sh with device-bin/ first; offline, broken, limit, pull-time and launchable files steer it.
+// The fake adb logs calls, keeps device files in device/, records until SIGINT and runs other shell commands through sh with device-bin/ first
+// (ADB_SERIAL naming the device); offline, broken, limit, pull-time and launchable files steer it. For a phone it lists devices, forwards to
+// the port in scrcpy-port, holds the scrcpy server's shell open, answers screencap with screen.png and dumpsys window with window.
 const fakeADB = `#!/bin/sh
 d=$(dirname "$0")
 [ "$1" = devices ] && { cat "$d/devices" 2>/dev/null; exit 0; }
 echo "$*" >> "$d/calls"
 [ -f "$d/offline" ] && { echo "adb: device offline" >&2; exit 1; }
+export ADB_SERIAL="$2"
 shift 2
 case "$1" in
 shell)
@@ -40,9 +43,10 @@ shell)
     trap finish INT
     if [ -f "$d/limit" ]; then sleep "$(cat "$d/limit")"; finish; fi
     while :; do sleep 0.05; done ;;
+  *app_process*) echo $$ >> "$d/servers"; exec sleep 600 ;;
   kill*) sh -c "$2" ;;
   rm) rm -f "$d/device/$(basename "$4")" ;;
-  dumpsys) cat "$d/activities" ;;
+  dumpsys) if [ "$3" = window ]; then cat "$d/window"; else cat "$d/activities"; fi ;;
   am) ;;
   cmd)
     if [ "$3" = package ]; then
@@ -60,6 +64,9 @@ pull)
   [ -f "$d/pull-time" ] && sleep "$(cat "$d/pull-time")"
   cp "$d/device/$(basename "$2")" "$3" ;;
 install) echo "Success" ;;
+forward) [ "$2" = --remove ] || cat "$d/scrcpy-port" ;;
+push) ;;
+exec-out) cat "$d/screen.png" ;;
 logcat) echo "logcat $*" ;;
 esac
 `
@@ -85,8 +92,9 @@ func sdkWithADB(t *testing.T) (root, tools string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		pids, _ := os.ReadFile(filepath.Join(tools, "recorders"))
-		for _, pid := range strings.Fields(string(pids)) {
+		recorders, _ := os.ReadFile(filepath.Join(tools, "recorders"))
+		servers, _ := os.ReadFile(filepath.Join(tools, "servers"))
+		for _, pid := range strings.Fields(string(recorders) + " " + string(servers)) {
 			number, _ := strconv.Atoi(pid)
 			syscall.Kill(number, syscall.SIGKILL)
 		}
