@@ -52,9 +52,9 @@ The toolbar above the screen:
   the theme, font and display size to their defaults and leaves the language as it is.
 
 The emulator keeps running when the session ends, as Android Studio's does; the next `/emulator`
-shows it again. One that no Claude session has shown for a while shuts itself down, as Shut down
-does: 15 minutes by default. Change it in `/config` under the mod's **Shut down an unused emulator
-after (minutes)**; 0 keeps it running until you shut it down. Only an emulator started from the live
+shows it again. One that no Claude session has shown for the idle time set in the mod's setting
+**Shut down an unused emulator after (minutes)** (in `/config`) shuts itself down, as Shut down does;
+0 turns that off. Only an emulator started from the live
 view or by Claude shuts down this way; one Android Studio started, and a phone, are left alone.
 
 ### A phone instead of an emulator

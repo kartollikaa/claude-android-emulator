@@ -232,8 +232,10 @@ Later: one emulator or device per session, each bridge claiming its own.
   the emulator down once none has been live for the period. Only emulators the bridge boots get a
   watcher, started at the boot rather than at every attach: one Android Studio started may be in use
   there, where no mark can show it, and phones are never touched. Each mark carries its bridge's idle
-  period, so the newest session's setting reaches a watcher already running. A lock per emulator (the
-  AVD and its pid; `flock`, `LockFileEx` on Windows) keeps a second watcher out. The emulator's own
+  period, so the newest session's setting reaches a watcher already running. The watcher follows the pid
+  the AVD's discovery file names once it appears, the launched pid until then. A lock per emulator
+  (the AVD and its launched pid; `flock`, `LockFileEx` on Windows), removed by its holder before it
+  lets go and taken only while the file is still at its path, keeps a second watcher out. The emulator's own
   `-idle-grpc-timeout` cannot do this (see the spike log).
 
 - **One tool for Claude, an action per call**, as the iOS Simulator's `control` tool is: one

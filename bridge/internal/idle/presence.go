@@ -1,7 +1,4 @@
-// Package idle shuts down an emulator the mod booted once no bridge has shown it for a while.
-//
-// A bridge showing an emulator keeps a presence mark naming the AVD and its own pid; a watcher, started detached when
-// the bridge boots the emulator, shuts it down after the idle period passes with no live mark.
+// Package idle shuts down an emulator the bridge booted once no bridge's presence mark has named it for the idle period.
 package idle
 
 import (
