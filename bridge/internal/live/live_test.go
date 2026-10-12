@@ -267,6 +267,7 @@ func TestHTTPInput(t *testing.T) {
 		postInput(t, h, "application/json; charset=utf-8", `{"type":"touch","phase":"up","x":0.5,"y":0.25}`),
 		postInput(t, h, "application/json", `{"type":"key","key":"GoBack"}`),
 		postInput(t, h, "application/json", `{"type":"text","text":"hi"}`),
+		postInput(t, h, "application/json", `{"type":"keyframe"}`),
 	}
 
 	for i, status := range statuses {

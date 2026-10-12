@@ -379,6 +379,14 @@ func (m Message) delivery() (func(context.Context, device.Device) error, error) 
 			return nil, fmt.Errorf("%w: a text message carries no text", ErrBadInput)
 		}
 		return func(ctx context.Context, conn device.Device) error { return conn.Text(ctx, m.Text) }, nil
+	case "keyframe":
+		// An emulator's frames are whole pictures, so only a phone's video has a key frame to ask for.
+		return func(_ context.Context, conn device.Device) error {
+			if resetter, ok := conn.(device.VideoResetter); ok {
+				return resetter.ResetVideo()
+			}
+			return nil
+		}, nil
 	}
 
 	return nil, fmt.Errorf("%w: unknown input type %q", ErrBadInput, m.Type)
